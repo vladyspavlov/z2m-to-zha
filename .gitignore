@@ -1,0 +1,8 @@
+# run state: captures, plans, logs and network backups (backups contain the network key)
+state/
+config.json
+*.db
+*.db-wal
+*.db-shm
+__pycache__/
+*.pyc

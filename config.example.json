@@ -1,0 +1,26 @@
+{
+  "_comment": "Copy to config.json. Every key is optional, null means auto-detect. See README, section Configuration.",
+  "state_dir": "state",
+  "ha": {"url": null, "token_env": "HA_TOKEN", "verify_tls": true},
+  "ha_config_dir": null,
+  "ha_config_dir_in_ha": null,
+  "ha_python": null,
+  "ha_container": "homeassistant",
+  "zha_database": null,
+  "custom_quirks_dir_in_ha": null,
+  "z2m": {
+    "addon_slug": null,
+    "data_dir": null,
+    "stop_cmd": null,
+    "start_cmd": null,
+    "unique_id_suffix": "_zigbee2mqtt"
+  },
+  "radio": {"port": null, "type": null, "baudrate": null, "flow_control": null},
+  "port_check": null,
+  "expected_devices": null,
+  "energy": {"power": "sensor.house_power", "utility_meter": "sensor.house_energy_meter"},
+  "soft_counters": [],
+  "must_exist": [],
+  "helper_reload_domains": ["integration", "generic_thermostat", "template", "group", "utility_meter",
+                            "statistics", "derivative", "min_max", "threshold", "filter"]
+}
