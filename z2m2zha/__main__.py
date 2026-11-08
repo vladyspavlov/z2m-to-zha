@@ -6,16 +6,17 @@ import argparse
 import os
 import sys
 
-from . import cutover, radio, refs, registry, util
+from . import backup, cutover, radio, refs, registry, util
 from .env import Env
 
 HELP = {
     "detect": "show what was auto-detected (read-only)",
     "scan-refs": "find references to Z2M entities/devices in the HA config (read-only)",
-    "suggest-device-config": "print the zha: device_config that keeps Z2M switches as switches (read-only)",
+    "suggest-zha-config": "print the zha: YAML block (switch pins, TX power, quirks path) for this setup (read-only)",
     "build-test": "build + validate a throwaway preseeded DB while Z2M runs (read-only for Z2M/ZHA)",
     "preflight": "stop Z2M ~1 min, read the radio with zigpy, compare with Z2M's backup, start Z2M",
     "listen-test": "stop Z2M a few minutes, run the network on zigpy, list who talks, start Z2M",
+    "backup": "copy the Z2M data dir and create a full HA backup (detached, --yes)",
     "capture": "snapshot all Z2M entities/devices/helpers (read-only, Z2M must run)",
     "cutover": "the migration itself (detached): stop Z2M, preseed, ZHA flow, plan, apply, verify",
     "plan": "map Z2M entities to ZHA entities (read-only)",
@@ -24,6 +25,7 @@ HELP = {
     "nudge": "write captured values back to config entities that stay unknown (--yes)",
     "verify": "check that every important entity exists and has a state, estimate the energy gap",
     "battery-notes": "re-run only the Battery Notes move (--yes)",
+    "orphans": "list ZHA entities no longer provided by ZHA, remove them with --yes",
     "rollback": "back to Zigbee2MQTT, same entity ids and device ids (--yes)",
 }
 
@@ -36,7 +38,11 @@ def detect(env):
     print("docker               :", " ".join(env.docker) if env.docker else "not available")
     ha = env.ha()
     conf = ha.rest("GET", "/config")
-    print("Home Assistant       :", conf.get("version"), "| ZHA entries:", len(ha("config_entries/get", domain="zha")))
+    zes = ha("config_entries/get", domain="zha")
+    flows = [f for f in ha("config_entries/flow/progress") if f["handler"] == "zha"]
+    print("Home Assistant       :", conf.get("version"), "| ZHA entries:", len([e for e in zes if e.get("source") != "ignore"]),
+          f"(+{len(zes) - len([e for e in zes if e.get('source') != 'ignore'])} ignored discovery, {len(flows)} pending flows)")
+    print("Z2M transmit power   :", env.z2m.advanced().get("transmit_power", "default"))
     z = env.z2m
     print("Zigbee2MQTT          :", f"add-on {z.slug} ({'running' if z.is_running() else 'stopped'})" if z.slug
           else f"commands: {env.cfg['z2m']['stop_cmd']} / {env.cfg['z2m']['start_cmd']}")
@@ -76,10 +82,11 @@ def main():
     {
         "detect": detect,
         "scan-refs": refs.scan_refs,
-        "suggest-device-config": refs.suggest_device_config,
+        "suggest-zha-config": refs.suggest_zha_config,
         "build-test": radio.build_test,
         "preflight": radio.preflight,
         "listen-test": lambda e: radio.listen_test(e, a.seconds, a.allow_write),
+        "backup": backup.backup,
         "capture": registry.capture,
         "cutover": lambda e: cutover.cutover(e, a.reuse_capture),
         "plan": registry.plan,
@@ -88,6 +95,7 @@ def main():
         "nudge": registry.nudge,
         "verify": registry.verify,
         "battery-notes": registry.battery_notes,
+        "orphans": registry.orphans,
         "rollback": registry.rollback,
     }[a.cmd](env)
 

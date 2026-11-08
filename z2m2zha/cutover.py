@@ -120,8 +120,14 @@ def z2m_back(env, ha, reason, db_backup=None):
 def cutover(env, reuse_capture=False):
     util.detach("cutover", env.state_dir)
     ha = env.ha()
-    if ha("config_entries/get", domain="zha"):
+    zha_entries = ha("config_entries/get", domain="zha")
+    real = [e for e in zha_entries if e.get("source") != "ignore"]
+    if real:
         raise SystemExit("refusing: a ZHA config entry already exists. Delete it first (no device is affected)")
+    for e in zha_entries:  # an ignored USB discovery would make the new flow abort as already configured
+        ha.rest("DELETE", f"/config/config_entries/entry/{e['entry_id']}")
+        util.log("removed the ignored ZHA discovery entry", e["entry_id"])
+    abort_flows(ha)  # a pending USB discovery flow holds the same unique id
     if not env.z2m.is_running() and env.z2m.slug:
         raise SystemExit("refusing: Zigbee2MQTT is not running (start it, capture needs it)")
     r_cfg = env.radio

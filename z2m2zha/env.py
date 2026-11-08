@@ -69,7 +69,11 @@ class Env:
         if not os.path.exists(p):
             if default is not None:
                 return default
-            raise SystemExit(f"missing {p}: run the step that creates it first")
+            hint = ""
+            if name == "capture.json":
+                hint = (f"\nIf the state dir was lost, copy the newest {self.ha_config_dir}/z2m2zha-backups/"
+                        f"capture-*.json to {p}")
+            raise SystemExit(f"missing {p}: run the step that creates it first{hint}")
         return json.load(open(p))
 
     def save_state(self, name, obj, mode=0o600):
@@ -316,6 +320,10 @@ class Z2M:
         if self.slug:  # add-on options override configuration.yaml
             s.update({k: v for k, v in ((self.info().get("options") or {}).get("serial") or {}).items() if v})
         return s
+
+    def advanced(self):
+        """Non-secret radio settings from Z2M's advanced section (transmit_power, channel)."""
+        return self._yaml().get("advanced") or {}
 
     def friendly_names(self):
         """IEEE (0x...) -> friendly name."""

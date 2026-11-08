@@ -102,20 +102,22 @@ in `bash -lc "..."` so the Supervisor token is loaded.
 |---|---|---|---|
 | `detect` | no | no | Shows HA, Z2M, radio, HA's Python and package versions |
 | `scan-refs` | no | no | Finds references to Z2M entities and devices in your HA config |
-| `suggest-device-config` | no | no | Prints the `zha: device_config` that keeps Z2M switches as switches |
+| `suggest-zha-config` | no | no | Prints the `zha:` block: switch pins, TX power from Z2M, custom quirks path |
 | `build-test` | no (temp files) | no | Builds and validates a throwaway preseeded DB, shows the quirk per device |
 | `preflight` | no | about 1 min | Reads the radio with zigpy and compares it with Z2M's backup |
 | `listen-test` | no (Z-Stack) | 2 to 4 min | Runs the network on zigpy and lists which devices talk |
-| `capture` | no | no | Snapshot of all Z2M entities, devices, helpers, Battery Notes |
+| `backup --yes` | yes (backups only) | no | Copies the Z2M data dir and creates a full HA backup with your automatic backup settings |
+| `capture` | no | no | Snapshot of all Z2M entities, devices, helpers, Battery Notes (plus a durable copy) |
 | `cutover` | **yes** | about 1 min | The migration (stop Z2M, preseed, ZHA flow, plan, apply, verify) |
 | `plan` | no | no | Maps every Z2M entity to its ZHA successor, shows blocking rows |
 | `apply --yes` | **yes** | no | Renames, moves helpers and Battery Notes, then runs `polish` |
 | `polish` | **yes** | no | Makes friendly names, icons and device classes match the capture |
 | `nudge --yes` | **yes** | no | Writes captured values back to config entities that stay unknown |
 | `verify` | no | no | Checks important entities, estimates the energy gap |
+| `orphans` | with `--yes` | no | Lists (removes) ZHA entities that ZHA no longer provides |
 | `rollback --yes` | **yes** | about 1 min | Back to Zigbee2MQTT with the same ids |
 
-`preflight`, `listen-test`, `cutover` and `rollback` **detach themselves** (own session, output
+`backup`, `preflight`, `listen-test`, `cutover` and `rollback` **detach themselves** (own session, output
 in `state/<name>.log`). A dropped SSH session can therefore never leave Zigbee2MQTT stopped
 half-way. Follow them with `tail -f state/<name>.log` until the `RESULT` line. Add
 `--foreground` to stay attached.
@@ -124,20 +126,24 @@ half-way. Follow them with `tail -f state/<name>.log` until the `RESULT` line. A
 
 ### 1. Prepare (Z2M keeps running, no outage)
 
-1. **Back up.** Take a full HA backup and copy the whole Z2M data dir (`database.db`,
-   `coordinator_backup.json`, `configuration.yaml`, `devices.yaml`, `state.json`). The state dir
-   of this tool also ends up holding network backups (mode 0600, they contain the network key).
+1. **Back up:** `backup --yes`. It copies the whole Z2M data dir (without logs) to
+   `<HA config>/z2m2zha-backups/` and creates a full HA backup with your automatic backup
+   settings (your locations, your encryption choice). Without automatic settings it makes a local,
+   unencrypted backup. The state dir and that folder also hold network backups and captures
+   (mode 0600, network backups contain the key).
 2. **Clean up Z2M.** Every device should have a complete interview. `build-test` lists devices it
    had to skip. A device that never finished its interview in Z2M will not work in ZHA either.
 3. **Check references:** `scan-refs`. Entity id references survive. Anything listed under
    `device_ids_BREAK` (device triggers, conditions and actions), `entity_uuids_BREAK`,
    `ieee_BREAK` or raw `zigbee2mqtt/` MQTT topics must be rewritten, ideally into entity based
    triggers and actions. `plan` and `verify` use this report too.
-4. **Light vs switch:** `suggest-device-config`. ZHA decides light or switch from the endpoint's
-   device type, and many relays announce "on/off light". Without the override, `switch.x` would
-   become `light.x`, its history could not continue and any `switch_as_x` helper built on it
-   would break. Merge the printed YAML into `configuration.yaml` and **restart HA once, before
-   the cutover**:
+4. **ZHA settings:** `suggest-zha-config`. It prints the `zha:` block that reproduces your Z2M
+   setup. **Light vs switch**: ZHA decides from the endpoint's device type, and many relays
+   announce "on/off light". Without a pin, `switch.x` would become `light.x`, its history could
+   not continue and any `switch_as_x` helper built on it would break. **TX power**: Z2M's
+   `advanced.transmit_power` becomes `zigpy_config.network.tx_power`. **Quirks**: the custom
+   quirks path, when the folder exists. Merge it into `configuration.yaml` and **restart HA once,
+   before the cutover**:
    ```yaml
    zha:
      device_config:
@@ -208,6 +214,9 @@ and `apply --yes` yourself.
 * **Metering scale**: a plug whose quirk does not cover its manufacturer may show energy 100x
   too high or without a unit. `tools/fix_attribute_cache.py` writes the multiplier and divisor
   into the zigpy cache (with HA stopped).
+* `orphans`: lists ZHA entities ZHA no longer provides (a `device_config` pin added after ZHA
+  already ran leaves the old `light.*`, plugs leave sensors for attributes they do not support).
+  `orphans --yes` removes them. Migrated ids are never touched.
 * Keep Z2M installed, stopped and on manual boot for a couple of weeks. Uninstalling it is fine
   later, but **deleting the MQTT integration deletes the tombstones** the rollback relies on.
 

@@ -1,4 +1,4 @@
-"""Find Zigbee2MQTT switches that ZHA would expose as lights, and print the zha: device_config fix.
+"""Find Zigbee2MQTT switches that ZHA would expose as lights. Prints JSON [[key, manufacturer, model]].
 
     python3 suggest_device_config.py <z2m database.db>     stdin: JSON list of "0x<ieee>" with a Z2M switch
 
@@ -34,9 +34,4 @@ for line in open(sys.argv[1]):
     for epid, ep in sorted((r.get("endpoints") or {}).items(), key=lambda x: int(x[0])):
         if 6 in ep.get("inClusterList", []) and (ep.get("profId", 260), ep.get("devId", 0)) in LIGHT_PROFILE_DEVICE_TYPES:
             out.append((f"{ieee}-{int(epid)}", r.get("modelId"), r.get("manufName")))
-if not out:
-    print("# nothing to do: ZHA keeps every Z2M switch a switch")
-else:
-    print("zha:\n  device_config:")
-    for key, model, manuf in out:
-        print(f'    "{key}":  # {manuf} {model}\n      type: switch')
+print(json.dumps(out))

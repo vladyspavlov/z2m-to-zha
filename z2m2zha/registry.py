@@ -17,6 +17,7 @@ Ordering traps handled here:
 import json
 import os
 import re
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -104,8 +105,13 @@ def capture(env):
     bn = capture_battery_notes(env, cfg, dev_ids, ents)
     env.save_state("capture.json", {"ts": time.time(), "mqtt_entry": mqtt[0]["entry_id"], "entities": out_e,
                                     "devices": out_d, "switch_as_x": sax, "energy": energy, "battery_notes": bn})
+    durable = f"{env.ha_config_dir}/z2m2zha-backups"
+    util.fs("mkdir", "-p", durable)
+    util.fs("chmod", "700", durable)
+    copy = f"{durable}/capture-{time.strftime('%Y%m%d-%H%M%S')}.json"
+    util.write_bytes(copy, util.read_bytes(env.state("capture.json")), 0o600)
     print(f"captured {len(out_e)} Z2M entities on {len(out_d)} devices, {len(sax)} switch_as_x helpers, "
-          f"{len(bn['notes'])} battery notes -> {env.state('capture.json')}")
+          f"{len(bn['notes'])} battery notes -> {env.state('capture.json')} (durable copy {copy})")
 
 
 # ---------------------------------------------------------------- Battery Notes (custom integration)
@@ -324,7 +330,7 @@ def plan(env):
                 elif not r["new"]:
                     hint = ""
                     if o["domain"] == "switch" and any(z["entity_id"].startswith("light.") for z in by_ieee.get(ie, [])):
-                        hint = " ZHA made it a light: add zha device_config type switch (see suggest-device-config)"
+                        hint = " ZHA made it a light: add zha device_config type switch (see suggest-zha-config)"
                     r["status"] = "NOMATCH " + r["note"] + hint
         if r["new"]:
             used.add(r["new"])
@@ -720,3 +726,31 @@ def battery_notes(env):
     ha = env.ha()
     migrate_battery_notes(ha, env.load_state("capture.json"), env.load_state("plan.json")["devices"],
                           Logged(env, ha, "apply.log"))
+
+
+def orphans(env):
+    """List (and with --yes remove) ZHA entities that ZHA no longer provides.
+
+    Typical case: a device_config override added after ZHA already ran leaves the old light.*
+    entity behind as "no longer provided" (state restored, unavailable). Entities that now carry
+    a migrated Z2M entity_id are never touched.
+    """
+    cap = env.load_state("capture.json", {"entities": []})
+    keep = {e["entity_id"] for e in cap["entities"]}
+    ha = env.ha()
+    states = {s["entity_id"]: s for s in ha("get_states")}
+    found = [e for e in ha("config/entity_registry/list") if e["platform"] == "zha" and e["entity_id"] not in keep
+             and not e.get("disabled_by")
+             and states.get(e["entity_id"], {}).get("attributes", {}).get("restored")]
+    for e in found:
+        print("   orphan:", e["entity_id"], "| unique_id", e["unique_id"])
+    if not found:
+        print("no orphaned ZHA entities")
+        return
+    if "--yes" not in sys.argv:
+        print(f"{len(found)} orphaned ZHA entities. Remove them with: orphans --yes")
+        return
+    do = Logged(env, ha, "apply.log")
+    for e in found:
+        do("config/entity_registry/remove", entity_id=e["entity_id"])
+    print(f"removed {len(found)} orphaned ZHA entities")

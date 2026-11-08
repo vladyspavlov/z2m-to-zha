@@ -30,4 +30,6 @@ for src in sources:
         if isinstance(d, dict) and d.get("friendly_name"):
             key = f"0x{ieee:016x}" if isinstance(ieee, int) else str(ieee).lower()  # unquoted 0x.. is an int
             names[key] = d["friendly_name"]
-print(json.dumps({"serial": out_serial, "names": names}))
+adv = conf.get("advanced") or {}
+out_adv = {k: adv[k] for k in ("transmit_power", "channel") if isinstance(adv.get(k), int)}  # never the key
+print(json.dumps({"serial": out_serial, "names": names, "advanced": out_adv}))

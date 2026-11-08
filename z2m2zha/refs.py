@@ -84,8 +84,13 @@ def scan_refs(env):
     print(f"full report: {env.state('refs.json')}")
 
 
-def suggest_device_config(env):
-    """Print the zha: device_config YAML that keeps Z2M switches as switches in ZHA."""
+def suggest_zha_config(env):
+    """Print the zha: block for configuration.yaml that reproduces the Z2M setup in ZHA.
+
+    * device_config: Z2M switches that ZHA would otherwise expose as lights
+    * zigpy_config.network.tx_power: Z2M's advanced.transmit_power (ZHA would use the default)
+    * custom_quirks_path: when a custom quirks folder exists
+    """
     ha = env.ha()
     sfx = env.cfg["z2m"]["unique_id_suffix"]
     ieees = set()
@@ -97,8 +102,25 @@ def suggest_device_config(env):
     st = env.staging
     util.write_bytes(f"{st}/z2m_database.db", util.read_bytes(env.z2m.file("database.db")), 0o600)
     try:
-        print(env.zigpy_script("suggest_device_config.py", env.in_ha(f"{st}/z2m_database.db"),
-                               input=json.dumps(sorted(ieees))), end="")
+        pins = json.loads(env.zigpy_script("suggest_device_config.py", env.in_ha(f"{st}/z2m_database.db"),
+                                           input=json.dumps(sorted(ieees))))
     finally:
         radio.cleanup_staging(env)
-    print("# Merge this into configuration.yaml (one zha: key only) and restart HA BEFORE the cutover.")
+    tx = env.z2m.advanced().get("transmit_power")
+    quirks = env.custom_quirks_in_ha
+    lines = ["zha:"]
+    if quirks:
+        lines.append(f"  custom_quirks_path: {quirks.rstrip('/')}/")
+    if pins:
+        lines.append("  device_config:  # Z2M switches that ZHA would make lights")
+        for key, model, manuf in pins:
+            lines += [f'    "{key}":  # {manuf} {model}', "      type: switch"]
+    if tx is not None:
+        lines += ["  zigpy_config:", "    network:", f"      tx_power: {tx}  # Z2M advanced.transmit_power"]
+    if len(lines) == 1:
+        print("# nothing to add: ZHA defaults match this Z2M setup")
+        return
+    print("\n".join(lines))
+    print("# Merge into configuration.yaml (a single zha: key), check the config and restart HA BEFORE the cutover.")
+    print(f"# {len(pins)} switch pins, tx_power {'from Z2M' if tx is not None else 'default'}, "
+          f"custom quirks {'yes' if quirks else 'no'}")
