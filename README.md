@@ -76,6 +76,25 @@ git clone <this repo> /tmp/z2m-to-zha && cd /tmp/z2m-to-zha
 bash -lc "python3 -m z2m2zha detect"                 # what was found (read-only)
 ```
 
+### Use it as an agent skill (Claude Code, Codex)
+
+The repository root is also an [Agent Skill](https://agentskills.io): `SKILL.md` tells a coding
+agent how to run the procedure, what is read-only, and which steps it must ask you about
+first. Install it by cloning (or symlinking) the repo as a skill folder:
+
+```bash
+# Claude Code, personal skill (or .claude/skills/z2m-to-zha inside a project)
+git clone <this repo> ~/.claude/skills/z2m-to-zha
+# Codex, personal skill (or .agents/skills/z2m-to-zha inside a repository)
+git clone <this repo> ~/.agents/skills/z2m-to-zha
+```
+
+Then ask the agent something like "migrate my Zigbee2MQTT network to ZHA" or "check if my Z2M
+network can move to ZHA". The skill copies the tool to your HA box over SSH when the agent runs
+elsewhere.
+
+### Run it yourself
+
 All commands run from the repository root as `python3 -m z2m2zha <command>`. On HA OS wrap them
 in `bash -lc "..."` so the Supervisor token is loaded.
 
@@ -271,6 +290,7 @@ coordinator is written `tcp://host:port` in Z2M and is translated to zigpy's `so
 ## Layout
 
 ```
+SKILL.md        agent skill instructions (Claude Code, Codex)
 z2m2zha/        the tool (stdlib only, runs where it can reach HA and the Z2M files)
 zigpy_side/     small scripts run with HA's own Python (zigpy, zha, quirks), passed with -c
 tools/          fix_attribute_cache.py (stdlib sqlite)
