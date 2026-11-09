@@ -188,3 +188,9 @@ block afterwards (HA restart needed).
 | Sleepy sensor battery stays `unknown` for days | It rarely reports the battery (Z2M often had no value either). Read the voltage right after the device sends an event, see the read on wake in `examples/quirks/tuya_ts0203_contact.py` |
 | Thermostat sensors `pi_heating_demand`, `setpoint_change_source` always `unknown` | Generic ZCL entities a Tuya MCU thermostat cannot fill. Drop them in the quirk with `prevent_default_entity_creation` |
 | Lost `state/` (add-on restarted) | Restore `capture.json` from the durable copy before `rollback` or `verify` |
+| Thermostat shows 21.4 and its buttons jump to 20.9 / 21.9 | The device only knows 0.5 C steps. Round setpoint writes in the quirk and set `target_temp_step: 0.5` in `customize` |
+| User wants to edit a text setting (schedule) | ZHA has no text entities. Show it as a sensor, write it with `zha.set_zigbee_cluster_attribute`, offer an `input_text` helper plus an automation for the UI |
+| Firmware update never offered after the move | Z2M's OTA index does not carry over. Add a `z2m_local` provider (each entry needs `url`, cached until HA restarts), then send an Image Notify (cluster 25, client command 0) so the device asks |
+| OTA ends with TIMEOUT (148) | No block request for 30 s. Common on sleepy end devices, which may never update this way. Routers are fine |
+| Relay switches with a lag or its state never updates after an OTA or re-pair | Attribute reporting was not set up (busy mesh). Run "Reconfigure" on the device page, then check one on/off |
+| A device was removed and joined again | HA restores its old entity ids, names and area. Recreate any `switch_as_x` helper that wrapped it, under its old entity id |

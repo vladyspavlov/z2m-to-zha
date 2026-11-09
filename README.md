@@ -10,6 +10,12 @@ are written so they do not depend on that house. Everything (add-on, data dir, s
 adapter, radio type, zigpy schema version) is auto-detected and can be overridden in a config
 file.
 
+> **Maturity.** The method (preseeded `zigbee.db`, reused network, ids renamed onto the old ones,
+> tombstone rollback) ran end to end on that house with a one-off version of these scripts. This
+> generic tool reuses that logic and was verified read-only on the same house (`detect`,
+> `scan-refs`, `build-test`, `capture`, `plan`, `verify`), but it has not done a full cutover
+> itself yet. Read each step's output instead of assuming success, and report what you find.
+
 > **Read the whole guide before running anything.** This changes a live system. Every writing
 > step needs `--yes`, everything else is read-only, and a tested rollback exists, but you are
 > responsible for your own backups.
@@ -72,7 +78,7 @@ file.
 
 ```bash
 # on an HA OS box, inside the SSH add-on (login shell, so $SUPERVISOR_TOKEN is set)
-git clone <this repo> /tmp/z2m-to-zha && cd /tmp/z2m-to-zha
+git clone https://github.com/vladyspavlov/z2m-to-zha.git /tmp/z2m-to-zha && cd /tmp/z2m-to-zha
 bash -lc "python3 -m z2m2zha detect"                 # what was found (read-only)
 ```
 
@@ -84,9 +90,9 @@ first. Install it by cloning (or symlinking) the repo as a skill folder:
 
 ```bash
 # Claude Code, personal skill (or .claude/skills/z2m-to-zha inside a project)
-git clone <this repo> ~/.claude/skills/z2m-to-zha
+git clone https://github.com/vladyspavlov/z2m-to-zha.git ~/.claude/skills/z2m-to-zha
 # Codex, personal skill (or .agents/skills/z2m-to-zha inside a repository)
-git clone <this repo> ~/.agents/skills/z2m-to-zha
+git clone https://github.com/vladyspavlov/z2m-to-zha.git ~/.agents/skills/z2m-to-zha
 ```
 
 Then ask the agent something like "migrate my Zigbee2MQTT network to ZHA" or "check if my Z2M
@@ -112,6 +118,7 @@ in `bash -lc "..."` so the Supervisor token is loaded.
 | `plan` | no | no | Maps every Z2M entity to its ZHA successor, shows blocking rows |
 | `apply --yes` | **yes** | no | Renames, moves helpers and Battery Notes, then runs `polish` |
 | `polish` | **yes** | no | Makes friendly names, icons and device classes match the capture |
+| `battery-notes --yes` | **yes** | no | Re-runs only the Battery Notes move (it is part of `apply`) |
 | `nudge --yes` | **yes** | no | Writes captured values back to config entities that stay unknown |
 | `verify` | no | no | Checks important entities, estimates the energy gap |
 | `orphans` | with `--yes` | no | Lists (removes) ZHA entities that ZHA no longer provides |
@@ -219,6 +226,44 @@ and `apply --yes` yourself.
   `orphans --yes` removes them. Migrated ids are never touched.
 * Keep Z2M installed, stopped and on manual boot for a couple of weeks. Uninstalling it is fine
   later, but **deleting the MQTT integration deletes the tombstones** the rollback relies on.
+
+### 4. Later: things that work differently in ZHA
+
+These came up in the days after the real migration. None of them needs this tool, but they save
+time.
+
+* **Tuya devices that report only on change.** Besides `nudge`, the usual cause of a value that
+  stays `unknown` is a generic ZCL entity the device cannot fill (thermostat
+  `pi_heating_demand`, `setpoint_change_source`, the On/Off client "Opening" sensor of TS0203
+  contacts). Drop them in the quirk with `prevent_default_entity_creation` and remove the old
+  registry entries (`orphans --yes`).
+* **Sleepy battery devices** often never send a battery report on their own. Reading the power
+  configuration cluster right after the device sends an event (it is awake then) fills it in.
+  See the read on wake in `examples/quirks/tuya_ts0203_contact.py`.
+* **Setpoint steps.** ZHA offers 0.1 degree steps on every thermostat. A device that only knows
+  0.5 degree steps then shows values its own buttons cannot reach. Round the writes in the quirk
+  (see `setpoint_to_dp` in the X5H example) and set `target_temp_step: 0.5` in
+  `homeassistant: customize:` for the climate entity.
+* **Text settings such as schedules.** ZHA has no text entities. The quirk can show the value as
+  a sensor and accept writes through the `zha.set_zigbee_cluster_attribute` action. For editing
+  from the UI, an `input_text` helper plus an automation that validates and writes it works well.
+* **Re-pairing a device later is safe for the ids.** When a removed device joins again with the
+  same IEEE, HA gives its entities their old entity ids, names and area back, so history
+  continues. A `switch_as_x` helper on one of its switches deletes itself on the removal and
+  must be created again (under its old entity id).
+* **Firmware updates (OTA).** Z2M's OTA index does not carry over. ZHA uses zigpy's providers.
+  Local images go in `zha: zigpy_config: ota: extra_providers:` as `type: z2m_local` with an
+  `index_file` in the Z2M index format. Each entry needs `url` even when `path` is set (the
+  schema rejects it otherwise), the index is cached until HA restarts, and the update entity
+  only shows a new version after the device asks for one (sending an Image Notify with
+  `zha.issue_zigbee_cluster_command`, cluster 25, client command 0, prompts that).
+  Sleepy end devices may never fetch the blocks, so an update can time out on them while
+  routers update fine. An update can also leave a device with broken attribute reporting:
+  "Reconfigure" on its device page fixes that.
+* **Quirks upstream.** The X5H thermostat quirk from `examples/quirks/` was submitted to
+  zha-device-handlers ([#5694](https://github.com/zigpy/zha-device-handlers/pull/5694)). Once a
+  zha-quirks release contains a device, remove the custom copy. The unique ids stay the same, so
+  the entities keep their ids.
 
 ## Mapping rules
 
