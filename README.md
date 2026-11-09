@@ -304,10 +304,10 @@ z2m2zha/        the tool (stdlib only, runs where it can reach HA and the Z2M fi
 zigpy_side/     small scripts run with HA's own Python (zigpy, zha, quirks), passed with -c
 tools/          fix_attribute_cache.py (stdlib sqlite)
 examples/quirks/  zha-quirks v2 quirks written for this migration: Tuya X5H thermostat (with
-                  week, schedule and a clock fix), Tuya PJ-1203 clamp meter, Tuya relays and
-                  plugs with the Z2M settings (countdown, switch type, 4 value indicator),
-                  TS0203 contact sensors (tamper, battery from voltage), TS0210 vibration
-                  sensitivity
+                  week, schedule sensor, factory reset button and a clock fix), Tuya PJ-1203
+                  clamp meter, Tuya relays and plugs with the Z2M settings (countdown, switch
+                  type, 4 value indicator), TS0203 contact sensors (tamper, battery from
+                  voltage read on wake), TS0210 vibration (sensitivity, battery read on wake)
 ```
 
 Nothing is copied into the HA container. Files HA's Python must read are staged in

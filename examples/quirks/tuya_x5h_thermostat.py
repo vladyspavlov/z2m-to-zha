@@ -17,7 +17,8 @@ DP map and scaling follow the Zigbee2MQTT x5h_thermostat converter
   101 deadzone (value /10)  102 heating temp limit (value, C)  104 backlight (enum 0..3)
   31 week program(enum 0 "5+2"/1 "6+1"/2 "7")
   30 schedule(raw, 8 periods of hour, minute, temperature x10 as 2 bytes big endian)
-Not exposed on purpose: 39 factory reset (dangerous).
+  39 factory reset(bool, write only). A button here (Z2M had an ON/OFF switch). It resets all
+     settings to default and does not unpair the device. Wait about a minute after pressing.
 
 Clock: the thermostat firmware reads only the "utc" field of the Tuya time reply, takes it as
 Unix time and adds a fixed +8 h (China) without wrapping the day, see Koenkk/zigbee2mqtt#14037
@@ -30,7 +31,14 @@ the time is also pushed on device traffic, at most once an hour (as the old Z2M 
 Schedule: ZHA has no text entities, so it is the attribute "schedule" (0xEF1E) on the Tuya
 cluster 0xEF00, in the Z2M text format "06:00/20.5 08:00/15 ... (8 periods)". Write it with
 zha.set_zigbee_cluster_attribute (cluster_id 61184, attribute 61214, value the text). Like under
-Z2M, the thermostat does not report the schedule by itself.
+Z2M, the thermostat does not report the schedule by itself (it ignores the Tuya data query too).
+The read only "Schedule" sensor shows the last schedule sent or reported. To edit it from the UI,
+pair it with an input_text helper and an automation that writes the helper with the action above
+and copies the sensor back into the helper when they differ.
+
+Not created: the generic ZCL thermostat sensors pi_heating_demand, setpoint_change_source and
+setpoint_change_source_timestamp. The X5H has no such datapoints, so they could only be unknown
+(Z2M did not have them either).
 
 Entity names and translation keys match the Z2M property names, so z2m2zha can map them.
 Note: this device only reports on change and ignores the Tuya data query. After a ZHA start its
@@ -45,9 +53,10 @@ import zigpy.types as t
 from zigpy.zcl import foundation
 from zigpy.zcl.clusters.hvac import RunningState, Thermostat
 
-from zhaquirks.builder import UnitOfTemperature
+from zhaquirks.builder import EntityType, UnitOfTemperature
 from zhaquirks.tuya.builder import TuyaQuirkBuilder, TuyaTemperatureMeasurement
 from zhaquirks.tuya import (
+    TUYA_CLUSTER_ID,
     TUYA_SET_TIME,
     TuyaCommand,
     TuyaData,
@@ -354,6 +363,40 @@ class X5HThermostat(TuyaThermostatV2):
         attribute_name="sound",
         translation_key="sound",
         fallback_name="Sound",
+    )
+    .sensor(
+        "schedule",
+        TUYA_CLUSTER_ID,
+        attribute_converter=str,
+        entity_type=EntityType.DIAGNOSTIC,
+        translation_key="schedule",
+        fallback_name="Schedule",
+    )
+    .tuya_dp_attribute(
+        dp_id=39,
+        attribute_name="factory_reset",
+        type=t.Bool,
+        access=foundation.ZCLAttributeAccess.Write,
+        converter=bool,
+        dp_converter=bool,
+    )
+    .write_attr_button(
+        "factory_reset",
+        1,
+        TUYA_CLUSTER_ID,
+        translation_key="factory_reset",
+        fallback_name="Factory reset",
+    )
+    .prevent_default_entity_creation(
+        endpoint_id=1, cluster_id=Thermostat.cluster_id, unique_id_suffix="pi_heating_demand"
+    )
+    .prevent_default_entity_creation(
+        endpoint_id=1, cluster_id=Thermostat.cluster_id, unique_id_suffix="setpoint_change_source"
+    )
+    .prevent_default_entity_creation(
+        endpoint_id=1,
+        cluster_id=Thermostat.cluster_id,
+        unique_id_suffix="setpoint_change_source_timestamp",
     )
     .adds(X5HThermostat)
     .skip_configuration()
