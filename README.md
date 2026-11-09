@@ -307,7 +307,8 @@ examples/quirks/  zha-quirks v2 quirks written for this migration: Tuya X5H ther
                   week, schedule sensor, factory reset button and a clock fix), Tuya PJ-1203
                   clamp meter, Tuya relays and plugs with the Z2M settings (countdown, switch
                   type, 4 value indicator), TS0203 contact sensors (tamper, battery from
-                  voltage read on wake), TS0210 vibration (sensitivity, battery read on wake)
+                  voltage read on wake, no dead "Opening" sensor), TS0210 vibration
+                  (sensitivity, battery read on wake)
 ```
 
 Nothing is copied into the HA container. Files HA's Python must read are staged in

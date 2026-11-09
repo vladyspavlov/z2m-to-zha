@@ -10,12 +10,15 @@ Zigbee2MQTT did for them (zigbee-herdsman-converters, devices/tuya.ts, model TS0
   * battery read on wake: the sensors almost never report the battery (even under Z2M most had
     no value), so the voltage is read right after each zone status notification, at most once
     in 12 h. Only the voltage is read, the percentage the device itself reports is wrong.
+  * no "Opening" binary sensor from the On/Off client cluster: the sensor only uses it to send
+    commands to a bound group, so that entity never changes (the contact is the IAS zone sensor).
 Nothing else changes: same clusters, same unique_ids for the existing entities.
 """
 
 import time
 
 from zigpy.quirks import CustomCluster
+from zigpy.zcl.clusters.general import OnOff
 from zigpy.zcl.clusters.security import IasZone
 
 from zhaquirks import PowerConfigurationCluster
@@ -87,5 +90,6 @@ class ContactIasZone(BatteryReadOnWake, CustomCluster, IasZone):
         unique_id_suffix="tamper",
         fallback_name="Tamper",
     )
+    .prevent_default_entity_creation(endpoint_id=1, cluster_id=OnOff.cluster_id)
     .add_to_registry()
 )
