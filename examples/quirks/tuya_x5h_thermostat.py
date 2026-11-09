@@ -46,6 +46,7 @@ entities can stay unknown until something changes. `python3 -m z2m2zha nudge --y
 """
 
 import datetime
+import math
 import time
 
 from zigpy.profiles import zha
@@ -205,6 +206,18 @@ def _schedule_to_raw(text: str) -> RawBytes:
     return RawBytes(out)
 
 
+SETPOINT_STEP_CENTI = 50  # the thermostat itself only knows 0.5 C steps
+
+
+def _setpoint_to_dp(centi: int) -> int:
+    """Centi-degrees to the DP16 deci-degrees, rounded to the nearest 0.5 C (halves go up).
+
+    Zigbee would accept 0.1 C steps (21.4 C), but the thermostat buttons then move from 21.4 to
+    20.9 or 21.9 only. Z2M also limited the setpoint to 0.5 C steps.
+    """
+    return math.floor(centi / SETPOINT_STEP_CENTI + 0.5) * SETPOINT_STEP_CENTI // 10
+
+
 def _signed16(x: int) -> int:
     # Same sign handling as the Z2M converter for DP24
     return x - (1 << 16) + 1 if x & (1 << 15) and x < (1 << 16) else x
@@ -242,8 +255,8 @@ class X5HThermostat(TuyaThermostatV2):
         dp_id=16,
         ep_attribute=X5HThermostat.ep_attribute,
         attribute_name=X5HThermostat.AttributeDefs.occupied_heating_setpoint.name,
-        converter=lambda x: x * 10,          # deci-degree -> centi-degree
-        dp_converter=lambda x: round(x / 10),  # centi-degree -> deci-degree (0.5 C steps survive)
+        converter=lambda x: x * 10,  # deci-degree to centi-degree
+        dp_converter=_setpoint_to_dp,  # centi-degree to deci-degree, on the 0.5 C grid
     )
     # DP24 feeds BOTH the climate entity and a standalone temperature sensor, so that
     # sensor.<thermostat>_local_temperature (which has long-term statistics under Z2M) has a ZHA
