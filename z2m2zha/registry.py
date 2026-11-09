@@ -21,7 +21,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 
-from . import util
+from . import links, util
 
 TOTALS = ("total", "total_increasing")
 
@@ -50,9 +50,13 @@ class Logged:
         self.ha, self.f = ha, open(env.state(name), "a")
 
     def __call__(self, type_, **kw):
+        self.note(type_, **kw)
+        return self.ha(type_, **kw)
+
+    def note(self, type_, **kw):
+        """Log a write that does not go through the websocket (REST flows)."""
         self.f.write(json.dumps({"t": time.time(), "cmd": type_, "kw": kw}) + "\n")
         self.f.flush()
-        return self.ha(type_, **kw)
 
 
 # ---------------------------------------------------------------- capture
@@ -103,15 +107,21 @@ def capture(env):
            for c in cfg if c["domain"] == "switch_as_x" and c["options"].get("entity_id") in z2m_eids]
     energy = {k: states.get(v, {}).get("state") for k, v in env.cfg["energy"].items() if v}
     bn = capture_battery_notes(env, cfg, dev_ids, ents)
+    lks = links.find(cfg, old, dev_ids, env.cfg["protect_domains"], env.cfg["relink_options_domains"])
+    att = links.attached(ents, dev_ids)
     env.save_state("capture.json", {"ts": time.time(), "mqtt_entry": mqtt[0]["entry_id"], "entities": out_e,
-                                    "devices": out_d, "switch_as_x": sax, "energy": energy, "battery_notes": bn})
+                                    "devices": out_d, "switch_as_x": sax, "energy": energy, "battery_notes": bn,
+                                    "links": lks, "attached": att})
     durable = f"{env.ha_config_dir}/z2m2zha-backups"
     util.fs("mkdir", "-p", durable)
     util.fs("chmod", "700", durable)
     copy = f"{durable}/capture-{time.strftime('%Y%m%d-%H%M%S')}.json"
     util.write_bytes(copy, util.read_bytes(env.state("capture.json")), 0o600)
     print(f"captured {len(out_e)} Z2M entities on {len(out_d)} devices, {len(sax)} switch_as_x helpers, "
-          f"{len(bn['notes'])} battery notes -> {env.state('capture.json')} (durable copy {copy})")
+          f"{len(bn['notes'])} battery notes, {len(lks)} other linked config entries "
+          f"-> {env.state('capture.json')} (durable copy {copy})")
+    print("Other integrations that point at Z2M entities or devices:")
+    links.report(lks, att, {d["device_id"]: d["name_by_user"] or d["name"] for d in out_d})
 
 
 # ---------------------------------------------------------------- Battery Notes (custom integration)
@@ -410,11 +420,10 @@ def apply(env):
         raise SystemExit("refusing: Zigbee2MQTT is running. Stop it (and keep it stopped) first")
     ha = env.ha()
     do = Logged(env, ha, "apply.log")
-    # 1. switch_as_x off, so the removal of their source cannot delete them
-    sax = [c for c in cap["switch_as_x"] if not c["disabled_by"]]
-    for c in sax:
-        do("config_entries/disable", entry_id=c["entry_id"], disabled_by="user")
-    print(f"1. disabled {len(sax)} switch_as_x helpers")
+    # 1. helpers that follow their source entity off, so removing the source cannot delete them
+    #    (switch_as_x, statistics, trend, history_stats) or unlink them (see links.py)
+    prot = links.protect_list(cap)
+    links.set_disabled(do, prot, True, "1. disabled")
     time.sleep(3)
     # 2. remove the Z2M devices from MQTT (frees the entity ids, keeps registry tombstones)
     for d in cap["devices"]:
@@ -460,10 +469,16 @@ def apply(env):
                     print("   options not copied", r["old"], str(e)[:100])
     print(f"4. {n} ZHA entities now use the old entity ids")
     migrate_battery_notes(ha, cap, pl["devices"], do)
-    for c in sax:
-        do("config_entries/disable", entry_id=c["entry_id"], disabled_by=None)
-    print(f"5. re-enabled {len(sax)} switch_as_x helpers")
+    links.set_disabled(do, prot, False, "5. re-enabled")
+    zha_of = {d["old_device"]: d["zha_device"] for d in pl["devices"] if d.get("zha_device")}
+    links.relink(env, ha, do, cap, zha_of)
     reload_helpers(env, ha)
+    n = links.reload_linked(ha, cap, skip_ids={c["entry_id"] for c in prot})
+    print(f"6. reloaded {n} other config entries that reference Z2M entities")
+    names = {d["device_id"]: d["name_by_user"] or d["name"] for d in cap["devices"]}
+    for lk in [x for x in cap.get("links", []) if x["action"] == "MANUAL"]:
+        devs = ", ".join(f"{names.get(d, d)}: {d} -> {zha_of.get(d, 'no ZHA device')}" for d in lk["device_ids"])
+        print(f"   MANUAL {lk['domain']}: {lk['title']} | {devs or ''} {lk['entity_uuids'] or ''}".rstrip())
     time.sleep(3)
     polish(env, ha)
     print("apply done. Next: verify, then nudge if some entities stay unknown")
@@ -602,6 +617,9 @@ def verify(env):
     dup = [e for e in reg if reg[e]["platform"] == "zha" and e not in old_ids and re.sub(r"_\d+$", "", e) in old_ids]
     if dup:
         print("ZHA entities that look like an old id plus a suffix (rename did not land):", dup)
+    if "links" in cap:
+        print()
+        links.check(ha, env, cap, {d["old_device"]: d["zha_device"] for d in pl.get("devices", []) if d.get("zha_device")})
     energy_gap(env, ha, states, cap)
 
 
@@ -669,13 +687,8 @@ def rollback(env):
             print("0. fresh ZHA network backup saved in the state dir (0600, contains the key)")
         except Exception as e:  # noqa: BLE001
             print("0. WARNING no ZHA network backup:", str(e)[:100])
-    sax = [c for c in cap["switch_as_x"] if not c["disabled_by"]]
-    for c in sax:
-        try:
-            do("config_entries/disable", entry_id=c["entry_id"], disabled_by="user")
-        except Exception as e:  # noqa: BLE001
-            print("   switch_as_x disable failed", c["title"], str(e)[:80])
-    print(f"1. disabled {len(sax)} switch_as_x helpers")
+    prot = links.protect_list(cap)
+    links.set_disabled(do, prot, True, "1. disabled")
     time.sleep(3)
     bn = cap.get("battery_notes") or {}
     if bn.get("entry_id") and applied:
@@ -731,13 +744,11 @@ def rollback(env):
         for n in bn["notes"]:
             if n["device_id"] in dev_now:
                 create_battery_note(ha, bn["entry_id"], n, dev_now[n["device_id"]], do)
-    for c in sax:
-        try:
-            do("config_entries/disable", entry_id=c["entry_id"], disabled_by=None)
-        except Exception as e:  # noqa: BLE001
-            print("   switch_as_x enable failed", c["title"], str(e)[:80])
-    print(f"6. re-enabled {len(sax)} switch_as_x helpers")
+    if os.path.exists(env.state("relinked.json")):
+        links.relink(env, ha, do, cap, dev_now, undo=True)
+    links.set_disabled(do, prot, False, "6. re-enabled")
     reload_helpers(env, ha)
+    links.reload_linked(ha, cap, skip_ids={c["entry_id"] for c in prot})
     env.save_state("rollback.json", {"ts": t_start})
     print("RESULT: rollback done. Run verify (the energy gap is measured from the rollback time)")
 

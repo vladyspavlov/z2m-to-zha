@@ -80,6 +80,11 @@ seconds until a line starting with `RESULT` appears. A dropped SSH session does 
    `entity_uuids_BREAK`, `ieee_BREAK` and `indirect_CHECK` (device triggers/actions, raw
    `zigbee2mqtt/` topics). They must be rewritten. Offer to convert them to entity based
    triggers/actions (with approval, back up the file, validate the config, reload).
+   Then read its config entry list. `PROTECT`, `RELINK`, `HANDLED` and `KEEP` are taken care of.
+   For each `MANUAL` entry tell the user what will need repointing after the cutover. A custom
+   integration that deletes or rewrites itself when its source entity disappears belongs in
+   `protect_domains`, one whose options flow is a plain form with the device field in
+   `relink_options_domains` (ask before changing the config). Mention the HomeKit note if shown.
 3. `suggest-zha-config`. It prints the `zha:` block that reproduces the Z2M setup: switch
    pins (`device_config`, else those switches become lights), TX power from Z2M, and the
    custom quirks path. With approval, merge it into `configuration.yaml` (back the file up,
@@ -137,7 +142,9 @@ Summarise the findings, risks and the plan, then propose the next step.
 ### 4. After the cutover
 
 1. `verify`. `BAD` battery devices are usually fine until they report. Anything else `BAD`
-   needs a look. A suffix warning means a rename did not land.
+   needs a look. A suffix warning means a rename did not land. The `links:` part lists config
+   entries that still point at removed Z2M devices or entity UUIDs (repoint them in the UI with
+   the user, the old and new device are printed) and helpers that deleted themselves.
 2. If config entities (numbers, selects, thermostats) stay `unknown`, offer `nudge --yes`. It
    writes the captured values back and never toggles relays.
 3. The energy estimate in `verify` prints a `utility_meter.calibrate` action. Show it, run it

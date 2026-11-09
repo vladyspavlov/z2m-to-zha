@@ -36,6 +36,13 @@ DEFAULTS = {
     "must_exist": [],
     "helper_reload_domains": ["integration", "generic_thermostat", "template", "group", "utility_meter",
                               "statistics", "derivative", "min_max", "threshold", "filter"],
+    # Extra config entry domains to disable while the Z2M entities are removed (on top of the
+    # core helpers that follow their source entity), e.g. a custom integration that deletes or
+    # rewrites itself when its source entity disappears.
+    "protect_domains": [],
+    # Domains whose stored device id (a "device" option) is moved to the ZHA device through
+    # their own options flow. Other device id references are reported as manual follow-ups.
+    "relink_options_domains": ["template"],
 }
 # Z2M serial.adapter -> zigpy radio type (names of zha's RadioType enum)
 Z2M_ADAPTER_TO_RADIO = {"zstack": "znp", "ember": "ezsp", "ezsp": "ezsp", "deconz": "deconz", "zigate": "zigate"}

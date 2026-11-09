@@ -143,7 +143,9 @@ half-way. Follow them with `tail -f state/<name>.log` until the `RESULT` line. A
 3. **Check references:** `scan-refs`. Entity id references survive. Anything listed under
    `device_ids_BREAK` (device triggers, conditions and actions), `entity_uuids_BREAK`,
    `ieee_BREAK` or raw `zigbee2mqtt/` MQTT topics must be rewritten, ideally into entity based
-   triggers and actions. `plan` and `verify` use this report too.
+   triggers and actions. It also lists every config entry of another integration that points at
+   Z2M entities or devices and what the cutover does with it (see **Other integrations**).
+   `plan` and `verify` use this report too.
 4. **ZHA settings:** `suggest-zha-config`. It prints the `zha:` block that reproduces your Z2M
    setup. **Light vs switch**: ZHA decides from the endpoint's device type, and many relays
    announce "on/off light". Without a pin, `switch.x` would become `light.x`, its history could
@@ -282,9 +284,13 @@ time.
 
 ## Traps this handles (learned the hard way)
 
-* **switch_as_x deletes itself.** When the entity it wraps disappears from the registry, the
-  helper removes its own config entry and its light. The helpers are disabled while the old
-  entities go away and are enabled again afterwards.
+* **Helpers delete themselves.** `switch_as_x`, `statistics`, `trend` and `history_stats`
+  remove their own config entry when their source entity disappears from the registry. The
+  other core helpers that follow a source entity (derivative, integration, utility_meter,
+  threshold, generic_thermostat, generic_hygrostat, mold_indicator) unlink their entities from
+  the device. All of them are disabled while the old entities go away and enabled again
+  afterwards, then they find their source under the same entity id and link to the ZHA device.
+  See **Other integrations** below.
 * **"Connected via Zigbee2MQTT Bridge"** and a coordinator named "Zigbee2MQTT Bridge": the Z2M
   bridge device has the coordinator's IEEE. Its name is never copied to the ZHA coordinator.
 * **Friendly names.** HA shows "<device name> <entity name>", and ZHA names entities differently
@@ -301,6 +307,33 @@ time.
 * **Device-based automations** (`device_id` triggers, conditions and actions, `zha_event` or MQTT
   device triggers) do not follow a rename. `scan-refs` finds them. Rewrite them.
 
+## Other integrations (helpers, Battery Notes, custom integrations)
+
+Entity id strings survive the cutover. Entity registry UUIDs and device ids do not, because the
+ZHA entities and devices are new registry entries. `scan-refs` and `capture` therefore search the
+data, options and subentries of **every** config entry outside MQTT and ZHA for Z2M entity ids,
+Z2M entity UUIDs and Z2M device ids, and print what the cutover will do with each one:
+
+| Action | Meaning | What happens |
+|---|---|---|
+| `PROTECT` | A helper that follows its source entity (list above, plus `protect_domains`) | Disabled during the swap, enabled afterwards |
+| `RELINK` | Stores a Z2M device id as an option, domain in `relink_options_domains` (default `template`) | Its options flow is run with the ZHA device id. `rollback` undoes it |
+| `HANDLED` | Has its own handler (Battery Notes: one subentry per device) | Moved by the handler |
+| `MANUAL` | Stores a device id or an entity UUID that no API can move (custom integrations, device based subentries) | Listed by `apply` with the old device and its ZHA successor, `verify` flags it until it is repointed in the UI |
+| `KEEP` | References entity ids only | Reloaded after `apply` so it picks up the renamed entities |
+| `ATTACHED` | Entities of other integrations that sit on a Z2M device | They lose the device when it is removed, the reload links them to the ZHA device, `verify` checks it |
+
+A HomeKit bridge that exposes Z2M entities is flagged too: HomeKit derives the accessory id from
+the entity unique id, so Apple Home sees the migrated entities as new accessories and their rooms
+and scenes in the Home app have to be set again. Nothing in HA can carry the old id over.
+
+**Adding support for another integration.** If its options flow is one plain form that contains
+the device field, add its domain to `relink_options_domains`. If it deletes or rewrites itself
+when its source entity goes away, add it to `protect_domains`. If it keys on devices in a more
+complex way (like Battery Notes), add its domain to `HANDLED_DOMAINS` in `z2m2zha/links.py` and
+write a capture and a migrate function next to the Battery Notes ones in `z2m2zha/registry.py`.
+Run the tests with `python3 -m unittest discover -s tests -t .`.
+
 ## Rollback (tested path)
 
 ```bash
@@ -308,14 +341,15 @@ bash -lc "python3 -m z2m2zha rollback --yes"
 ```
 
 1. Saves a fresh ZHA network backup (state dir, 0600).
-2. Disables the `switch_as_x` helpers and removes the Battery Notes on ZHA devices.
+2. Disables the protected helpers and removes the Battery Notes on ZHA devices.
 3. **Deletes the ZHA config entry.** That only unloads ZHA: no leave is sent and the radio is not
    touched. Never use ZHA's "Remove device" for this, because that sends a real leave.
 4. Starts Zigbee2MQTT. zigbee-herdsman sees the same adapter, PAN and keys and resumes the
    network as on any restart.
 5. Waits for MQTT discovery. The tombstoned entries come back with their original ids, history
    continues. Ids and customisations are re-asserted where needed.
-6. Restores Battery Notes and `switch_as_x`, reloads helpers. Then run `verify`.
+6. Restores Battery Notes, points relinked device options back at the Z2M devices, enables the
+   protected helpers and reloads the linked integrations. Then run `verify`.
 
 ## Configuration
 
@@ -337,6 +371,8 @@ Copy `config.example.json` to `config.json` (or pass `--config`). Every key is o
 | `energy.power`, `energy.utility_meter` | none | For the energy gap estimate |
 | `soft_counters` | `[]` | `total_increasing` sensors that are known noise (state class change accepted) |
 | `must_exist` | `[]` | Extra entities `verify` must find with a state |
+| `protect_domains` | `[]` | Extra config entry domains disabled during the swap (see Other integrations) |
+| `relink_options_domains` | `["template"]` | Domains whose device option is moved to the ZHA device through their options flow |
 
 The serial port path must be the same for this tool and for HA (true on HA OS). A network
 coordinator is written `tcp://host:port` in Z2M and is translated to zigpy's `socket://`.
@@ -348,6 +384,7 @@ SKILL.md        agent skill instructions (Claude Code, Codex)
 z2m2zha/        the tool (stdlib only, runs where it can reach HA and the Z2M files)
 zigpy_side/     small scripts run with HA's own Python (zigpy, zha, quirks), passed with -c
 tools/          fix_attribute_cache.py (stdlib sqlite)
+tests/          unit tests (stdlib unittest): python3 -m unittest discover -s tests -t .
 examples/quirks/  zha-quirks v2 quirks written for this migration: Tuya X5H thermostat (with
                   week, schedule sensor, factory reset button and a clock fix), Tuya PJ-1203
                   clamp meter, Tuya relays and plugs with the Z2M settings (countdown, switch

@@ -21,6 +21,8 @@
   "energy": {"power": "sensor.house_power", "utility_meter": "sensor.house_energy_meter"},
   "soft_counters": [],
   "must_exist": [],
+  "protect_domains": [],
+  "relink_options_domains": ["template"],
   "helper_reload_domains": ["integration", "generic_thermostat", "template", "group", "utility_meter",
                             "statistics", "derivative", "min_max", "threshold", "filter"]
 }

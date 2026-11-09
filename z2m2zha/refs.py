@@ -5,7 +5,7 @@ import re
 import subprocess
 import sys
 
-from . import radio, util
+from . import links, radio, util
 
 SKIP_DIRS = {"deps", "tts", "backups", "backup", "www", "custom_components", "esphome", "node_modules", ".cloud",
              "image", "media", "share", "themes", "log", "logs", "__pycache__", ".z2m2zha"}
@@ -69,7 +69,11 @@ def scan_refs(env):
             hits = {k: v for k, v in hits.items() if v}
             if hits:
                 report[rel] = hits
-    out = {"z2m_entities": len(eids), "z2m_devices": len(dev), "entity_ids": sorted(referenced), "files": report}
+    cfg = env.storage("core.config_entries")["data"]["entries"]
+    lks = links.find(cfg, z2m, z2m_dev_ids, env.cfg["protect_domains"], env.cfg["relink_options_domains"])
+    att = links.attached(er, z2m_dev_ids)
+    out = {"z2m_entities": len(eids), "z2m_devices": len(dev), "entity_ids": sorted(referenced), "files": report,
+           "links": lks, "attached": att}
     env.save_state("refs.json", out, 0o644)
     if os.environ.get("SUDO_UID"):
         os.chown(env.state("refs.json"), int(os.environ["SUDO_UID"]), int(os.environ.get("SUDO_GID", "0")))
@@ -81,6 +85,8 @@ def scan_refs(env):
           if breaking else "Nothing references Z2M device ids, registry UUIDs, raw topics or IEEEs.")
     for f, h in sorted(breaking.items()):
         print(" ", f, json.dumps(h))
+    print("Config entries of other integrations (helpers, custom integrations) and what the cutover does:")
+    links.report(lks, att, dev)
     print(f"full report: {env.state('refs.json')}")
 
 
