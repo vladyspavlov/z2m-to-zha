@@ -225,7 +225,10 @@ RULES = {
     "light": ("light", [P_uid(r"^[0-9a-f:]{23}-1$"), P_uid(r"-1-6$"), *ANY]),
     "cover": ("cover", ANY), "lock": ("lock", ANY), "fan": ("fan", ANY), "climate": ("climate", ANY),
     "update": ("update", ANY),
-    "contact": ("binary_sensor", [P_dc("opening", "door", "window"), P_uid(r"-1-(1280|6)$")]),
+    # IAS zone first: many contact sensors (Tuya TS0203) also have an On/Off CLIENT cluster that
+    # ZHA shows as an "Opening" binary sensor which never changes. Lumi magnets have no IAS zone
+    # and report on On/Off, so they fall through to the next predicates.
+    "contact": ("binary_sensor", [P_uid(r"-1-1280$"), P_dc("opening", "door", "window"), P_uid(r"-1-6$")]),
     "occupancy": ("binary_sensor", [P_uid(r"-1-1030$"), P_dc("occupancy"), P_dc("motion", "presence")]),
     "presence": ("binary_sensor", [P_dc("occupancy", "presence", "motion")]),
     "vibration": ("binary_sensor", [P_dc("vibration", "moving"), P_uid(r"-1-1280$")]),
@@ -257,13 +260,28 @@ RULES = {
     "child_lock": ("switch", [P_tk("child_lock")]),
     "switch_child_lock": ("switch", [P_tk("child_lock")]),
     "local_temperature_calibration": ("number", [P_tk("local_temperature_calibration")]),
+    # Config entities. Tuya on/off attributes (ZHA shows them for quirks exposing the Tuya plug feature)
+    "power_outage_memory": ("select", [P_uid(r"-6-power_on_state$")]),
+    "power_on_behavior": ("select", [P_uid(r"-6-power_on_state$"), P_uid(r"-6-start_up_on_off$")]),
+    "indicator_mode": ("select", [P_uid(r"-6-backlight_mode$")]),
+    "identify": ("button", [P_uid(r"-1-3$"), P_dc("identify")]),
 }
 # Mapped when present, dropped (never blocking) when ZHA has no equivalent on that device.
 OPTIONAL = {"voltage", "tamper", "child_lock", "switch_child_lock", "linkquality", "battery_low", "update",
-            "device_temperature", "power_factor", "ac_frequency"}
+            "device_temperature", "power_factor", "ac_frequency", "power_outage_memory", "power_on_behavior",
+            "indicator_mode", "identify"}
+# Any other number/select/switch/button: a quirk entity whose unique_id suffix (or translation key) is
+# the Z2M property name, the convention for custom quirks (see README, Writing a quirk). Not blocking.
+GENERIC_DOMAINS = {"number", "select", "switch", "button"}
 
 
-def rule_for(prop):
+def is_generic(prop, domain):
+    """True when only the generic quirk-suffix rule applies (such rows never block)."""
+    return (prop not in RULES and domain in GENERIC_DOMAINS
+            and not re.fullmatch(r"(switch|state|light)_l\d+", prop or ""))
+
+
+def rule_for(prop, domain=None):
     if prop in RULES:
         return RULES[prop]
     m = re.fullmatch(r"(switch|state|light)_l(\d+)", prop)  # multi-gang: Z2M l1/l2 -> ZHA endpoint 1/2
@@ -271,6 +289,8 @@ def rule_for(prop):
         dom = "light" if m.group(1) == "light" else "switch"
         ep = m.group(2)
         return dom, [P_uid(rf"^[0-9a-f:]{{23}}-{ep}$"), P_uid(rf"-{ep}-6$")]
+    if domain in GENERIC_DOMAINS and prop:
+        return domain, [P_uid(rf"-{re.escape(prop)}$"), P_tk(prop)]
     return None
 
 
@@ -298,7 +318,7 @@ def plan(env):
     rows, used, blocks = [], set(), 0
     for o in cap["entities"]:
         r = {"old": o["entity_id"], "prop": o["prop"], "new": None, "status": "", "note": ""}
-        rule = rule_for(o["prop"] or "")
+        rule = rule_for(o["prop"] or "", o["domain"])
         if o["entity_id"] in ovr:
             r["new"] = ovr[o["entity_id"]]
             r["status"] = "OVERRIDE" if r["new"] else "DROP (override)"
@@ -325,7 +345,8 @@ def plan(env):
                         break
                     if len(hit) > 1:
                         r["note"] = "ambiguous: " + ", ".join(z["entity_id"] for z in hit)
-                if not r["new"] and o["prop"] in OPTIONAL and not r["note"].startswith("ambiguous"):
+                optional = o["prop"] in OPTIONAL or is_generic(o["prop"], o["domain"])
+                if not r["new"] and optional and not r["note"].startswith("ambiguous"):
                     r["status"] = "DROP (no ZHA equivalent on this device, old history stays readable)"
                 elif not r["new"]:
                     hint = ""
@@ -360,7 +381,8 @@ def plan(env):
                 r["status"] = "MAP" + (f" (note: {', '.join(problems)})" if problems else "")
         if r["status"].startswith("DROP") and o["entity_id"] in refs and o["entity_id"] not in ovr:
             r["status"] = "BLOCK referenced in config but no ZHA successor (" + r["status"] + ")"
-        r["blocking"] = r["status"].startswith(("BLOCK", "NOMATCH")) and o["prop"] not in OPTIONAL
+        r["blocking"] = r["status"].startswith(("BLOCK", "NOMATCH")) and o["prop"] not in OPTIONAL \
+            and not is_generic(o["prop"], o["domain"])
         blocks += r["blocking"]
         rows.append(r)
     devmap = []

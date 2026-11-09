@@ -184,4 +184,5 @@ block afterwards (HA restart needed).
 | SSH drops during `backup` | Normal (add-ons freeze). It runs detached. Reconnect and poll the log |
 | Many `unknown` thermostats/selects | Report-on-change Tuya devices. `nudge --yes` |
 | Energy 100x too high on a plug | Missing metering divisor. `tools/fix_attribute_cache.py` with HA stopped |
+| Door sensor blinks but its entity never changes | The old id sits on the On/Off client "Opening" sensor (`-1-6`), the contact is the IAS zone sensor (`-1-1280`). `plan` prefers IAS now. To fix an existing install, swap the two ids without moving history (rename the dead one onto an id that already has recorder history) |
 | Lost `state/` (add-on restarted) | Restore `capture.json` from the durable copy before `rollback` or `verify` |

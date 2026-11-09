@@ -58,10 +58,12 @@ from zhaquirks.tuya.builder import TuyaQuirkBuilder
         type=t.uint32_t,
         divisor=1000,
         # DP101 is the energy used in the LAST REPORT INTERVAL (about 8 minutes), not a running
-        # total. No state_class, so no bogus long-term statistics. A real energy total is the
-        # Riemann integral of the DP19 power.
+        # total. A real energy total is the Riemann integral of the DP19 power. The state class
+        # is total_increasing anyway, as Z2M had it, so that the long-term statistics recorded
+        # under Z2M continue (dropping it makes HA raise a repair). Do not feed this sensor to
+        # the Energy dashboard.
         device_class=SensorDeviceClass.ENERGY,
-        state_class=None,
+        state_class=SensorStateClass.TOTAL_INCREASING,
         unit=UnitOfEnergy.KILO_WATT_HOUR,
         translation_key="energy_last_interval",
         fallback_name="Energy (last interval)",
