@@ -10,6 +10,26 @@ are written so they do not depend on that house. Everything (add-on, data dir, s
 adapter, radio type, zigpy schema version) is auto-detected and can be overridden in a config
 file.
 
+**Quick links:**
+[Quick start](#quick-start) ·
+[Commands](#run-it-yourself) ·
+[Step by step](#step-by-step)
+([prepare](#1-prepare-z2m-keeps-running-no-outage),
+[cut over](#2-cut-over-about-1-minute-of-outage),
+[after](#3-after-the-cutover),
+[later](#4-later-things-that-work-differently-in-zha)) ·
+[Rollback](#rollback-tested-path) ·
+[Configuration](#configuration)<br>
+[How it works](#how-it-works) ·
+[Supported setups](#supported-setups) ·
+[Other tools](#what-already-exists-and-what-this-adds) ·
+[Mapping rules](#mapping-rules) ·
+[Traps](#traps-this-handles-learned-the-hard-way) ·
+[Other integrations](#other-integrations-helpers-battery-notes-custom-integrations) ·
+[Z2M features ZHA does not take over](#zigbee2mqtt-features-zha-does-not-take-over) ·
+[Example quirks](examples/quirks/) ·
+[Agent skill](#use-it-as-an-agent-skill-claude-code-codex)
+
 > **Maturity.** The method (preseeded `zigbee.db`, reused network, ids renamed onto the old ones,
 > tombstone rollback) ran end to end on that house with a one-off version of these scripts. This
 > generic tool reuses that logic and was verified read-only on the same house (`detect`,
@@ -35,7 +55,7 @@ file.
 * **Home Assistant**: any install type. On HA OS or Supervised, run it from an SSH add-on
   (Advanced SSH & Web Terminal with protection mode off, so `$SUPERVISOR_TOKEN` and Docker are
   available). Elsewhere, point it at HA with a URL and a long-lived access token and tell it how
-  to run HA's Python and how to stop/start Zigbee2MQTT (see Configuration).
+  to run HA's Python and how to stop/start Zigbee2MQTT (see [Configuration](#configuration)).
 * **Zigbee2MQTT**: the add-on (auto-detected) or any other install (stop/start commands in the
   config). Its `database.db` must be readable.
 * **Radios**: anything zigpy supports with the same firmware family on both sides.
@@ -86,7 +106,7 @@ bash -lc "python3 -m z2m2zha detect"                 # what was found (read-only
 
 The repository root is also an [Agent Skill](https://agentskills.io): `SKILL.md` tells a coding
 agent how to run the procedure, what is read-only, and which steps it must ask you about
-first. Install it by cloning (or symlinking) the repo as a skill folder:
+first ([`SKILL.md`](SKILL.md)). Install it by cloning (or symlinking) the repo as a skill folder:
 
 ```bash
 # Claude Code, personal skill (or .claude/skills/z2m-to-zha inside a project)
@@ -114,7 +134,7 @@ in `bash -lc "..."` so the Supervisor token is loaded.
 | `listen-test` | no (Z-Stack) | 2 to 4 min | Runs the network on zigpy and lists which devices talk |
 | `backup --yes` | yes (backups only) | no | Copies the Z2M data dir and creates a full HA backup with your automatic backup settings |
 | `capture` | no | no | Snapshot of all Z2M entities, devices, helpers, Battery Notes (plus a durable copy) |
-| `cutover` | **yes** | about 1 min | The migration (stop Z2M, preseed, ZHA flow, plan, apply, verify) |
+| `cutover` | **yes** | about 1 min | The migration (stop Z2M, preseed, ZHA flow, plan, apply, verify), see [Cut over](#2-cut-over-about-1-minute-of-outage) |
 | `groups --yes` | **yes** | no | Creates the Z2M groups in ZHA with the same ids (part of `cutover`) |
 | `plan` | no | no | Maps every Z2M entity to its ZHA successor, shows blocking rows |
 | `apply --yes` | **yes** | no | Renames, moves helpers and Battery Notes, then runs `polish` |
@@ -123,7 +143,7 @@ in `bash -lc "..."` so the Supervisor token is loaded.
 | `nudge --yes` | **yes** | no | Writes captured values back to config entities that stay unknown |
 | `verify` | no | no | Checks important entities, estimates the energy gap |
 | `orphans` | with `--yes` | no | Lists (removes) ZHA entities that ZHA no longer provides |
-| `rollback --yes` | **yes** | about 1 min | Back to Zigbee2MQTT with the same ids |
+| `rollback --yes` | **yes** | about 1 min | Back to Zigbee2MQTT with the same ids, see [Rollback](#rollback-tested-path) |
 
 `backup`, `preflight`, `listen-test`, `cutover` and `rollback` **detach themselves** (own session, output
 in `state/<name>.log`). A dropped SSH session can therefore never leave Zigbee2MQTT stopped
@@ -145,9 +165,11 @@ half-way. Follow them with `tail -f state/<name>.log` until the `RESULT` line. A
    `device_ids_BREAK` (device triggers, conditions and actions), `entity_uuids_BREAK`,
    `ieee_BREAK` or raw `zigbee2mqtt/` MQTT topics must be rewritten, ideally into entity based
    triggers and actions. It also lists every config entry of another integration that points at
-   Z2M entities or devices and what the cutover does with it (see **Other integrations**), and
+   Z2M entities or devices and what the cutover does with it (see
+   [Other integrations](#other-integrations-helpers-battery-notes-custom-integrations)), and
    the Z2M features ZHA does not take over: groups, action entities, software device options,
-   converters, other MQTT users (see **Zigbee2MQTT features ZHA does not take over**).
+   converters, other MQTT users (see
+   [Zigbee2MQTT features ZHA does not take over](#zigbee2mqtt-features-zha-does-not-take-over)).
    `plan` and `verify` use this report too.
 4. **ZHA settings:** `suggest-zha-config`. It prints the `zha:` block that reproduces your Z2M
    setup. **Light vs switch**: ZHA decides from the endpoint's device type, and many relays
@@ -164,7 +186,7 @@ half-way. Follow them with `tail -f state/<name>.log` until the `RESULT` line. A
    ```
 5. **Quirks:** `build-test`. It shows which quirk ZHA would apply to each device. Tuya `_TZE...`
    devices without a quirk usually show few or no entities in ZHA. Add custom quirks
-   (`zha: custom_quirks_path: /config/custom_zha_quirks/`, see `examples/quirks/`) and run
+   (`zha: custom_quirks_path: /config/custom_zha_quirks/`, see [`examples/quirks/`](examples/quirks/)) and run
    `build-test` again until every device you care about has one.
 6. **Preflight** (about 1 minute of outage): `preflight`. PASS means zigpy reads this radio as
    the same network Z2M has (PAN, extended PAN, channel, network key, coordinator). It also
@@ -225,7 +247,7 @@ and `apply --yes` yourself.
   did not integrate. `verify` estimates the missing kWh (trapezoid, like the Riemann helper) and
   prints a one-time `utility_meter.calibrate` action for you to review and run.
 * **Metering scale**: a plug whose quirk does not cover its manufacturer may show energy 100x
-  too high or without a unit. `tools/fix_attribute_cache.py` writes the multiplier and divisor
+  too high or without a unit. [`tools/fix_attribute_cache.py`](tools/fix_attribute_cache.py) writes the multiplier and divisor
   into the zigpy cache (with HA stopped).
 * `orphans`: lists ZHA entities ZHA no longer provides (a `device_config` pin added after ZHA
   already ran leaves the old `light.*`, plugs leave sensors for attributes they do not support).
@@ -245,10 +267,10 @@ time.
   registry entries (`orphans --yes`).
 * **Sleepy battery devices** often never send a battery report on their own. Reading the power
   configuration cluster right after the device sends an event (it is awake then) fills it in.
-  See the read on wake in `examples/quirks/tuya_ts0203_contact.py`.
+  See the read on wake in [`examples/quirks/tuya_ts0203_contact.py`](examples/quirks/tuya_ts0203_contact.py).
 * **Setpoint steps.** ZHA offers 0.1 degree steps on every thermostat. A device that only knows
   0.5 degree steps then shows values its own buttons cannot reach. Round the writes in the quirk
-  (see `setpoint_to_dp` in the X5H example) and set `target_temp_step: 0.5` in
+  (see `setpoint_to_dp` in the [X5H example](examples/quirks/tuya_x5h_thermostat.py)) and set `target_temp_step: 0.5` in
   `homeassistant: customize:` for the climate entity.
 * **Text settings such as schedules.** ZHA has no text entities. The quirk can show the value as
   a sensor and accept writes through the `zha.set_zigbee_cluster_attribute` action. For editing
@@ -296,7 +318,7 @@ time.
   threshold, generic_thermostat, generic_hygrostat, mold_indicator) unlink their entities from
   the device. All of them are disabled while the old entities go away and enabled again
   afterwards, then they find their source under the same entity id and link to the ZHA device.
-  See **Other integrations** below.
+  See [Other integrations](#other-integrations-helpers-battery-notes-custom-integrations) below.
 * **"Connected via Zigbee2MQTT Bridge"** and a coordinator named "Zigbee2MQTT Bridge": the Z2M
   bridge device has the coordinator's IEEE. Its name is never copied to the ZHA coordinator.
 * **Friendly names.** HA shows "<device name> <entity name>", and ZHA names entities differently
@@ -358,7 +380,7 @@ that. `scan-refs` and `capture` list these with what to do:
 | **Green Power devices** | Not supported by ZHA | They stop working, tell the user before the cutover |
 | **Other MQTT users** (Node-RED, AppDaemon, scripts on `zigbee2mqtt/...`) | The topics go silent | Running add-ons with such names and add-on config files with `zigbee2mqtt/` topics are listed. Rewrite them to use HA entities |
 | **Bindings and reporting** set up in Z2M | Stay in the devices and keep working. ZHA adds its own bindings to the coordinator | Nothing, but do not expect ZHA to show the Z2M bindings |
-| **Z2M OTA index** | Not used | See **Firmware updates** above |
+| **Z2M OTA index** | Not used | See **Firmware updates** in [Later: things that work differently in ZHA](#4-later-things-that-work-differently-in-zha) |
 | `retain`, `optimistic`, `qos` | MQTT only | Nothing |
 
 ## Rollback (tested path)
@@ -380,7 +402,7 @@ bash -lc "python3 -m z2m2zha rollback --yes"
 
 ## Configuration
 
-Copy `config.example.json` to `config.json` (or pass `--config`). Every key is optional.
+Copy [`config.example.json`](config.example.json) to `config.json` (or pass `--config`). Every key is optional.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -398,7 +420,7 @@ Copy `config.example.json` to `config.json` (or pass `--config`). Every key is o
 | `energy.power`, `energy.utility_meter` | none | For the energy gap estimate |
 | `soft_counters` | `[]` | `total_increasing` sensors that are known noise (state class change accepted) |
 | `must_exist` | `[]` | Extra entities `verify` must find with a state |
-| `protect_domains` | `[]` | Extra config entry domains disabled during the swap (see Other integrations) |
+| `protect_domains` | `[]` | Extra config entry domains disabled during the swap (see [Other integrations](#other-integrations-helpers-battery-notes-custom-integrations)) |
 | `relink_options_domains` | `["template"]` | Domains whose device option is moved to the ZHA device through their options flow |
 
 The serial port path must be the same for this tool and for HA (true on HA OS). A network
