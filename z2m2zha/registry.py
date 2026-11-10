@@ -21,7 +21,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 
-from . import links, util
+from . import features, links, util
 
 TOTALS = ("total", "total_increasing")
 
@@ -82,6 +82,7 @@ def capture(env):
                                              "disabled_by", "hidden_by", "aliases", "labels", "options",
                                              "original_device_class", "device_class")}
                      | {"ieee": ieee, "prop": prop, "domain": e["entity_id"].split(".")[0],
+                        "group_id": features.group_id(e["unique_id"], sfx),
                         "bridge": e["unique_id"].startswith("bridge_"), "state": st.get("state"),
                         "unit": at.get("unit_of_measurement"), "state_class": at.get("state_class"),
                         "attrs": {k: at.get(k) for k in ("friendly_name", "icon", "device_class",
@@ -109,9 +110,10 @@ def capture(env):
     bn = capture_battery_notes(env, cfg, dev_ids, ents)
     lks = links.find(cfg, old, dev_ids, env.cfg["protect_domains"], env.cfg["relink_options_domains"])
     att = links.attached(ents, dev_ids)
+    feats = features.collect(env, old, sfx, env.load_state("refs.json", {}))
     env.save_state("capture.json", {"ts": time.time(), "mqtt_entry": mqtt[0]["entry_id"], "entities": out_e,
                                     "devices": out_d, "switch_as_x": sax, "energy": energy, "battery_notes": bn,
-                                    "links": lks, "attached": att})
+                                    "links": lks, "attached": att, "features": feats})
     durable = f"{env.ha_config_dir}/z2m2zha-backups"
     util.fs("mkdir", "-p", durable)
     util.fs("chmod", "700", durable)
@@ -122,6 +124,8 @@ def capture(env):
           f"-> {env.state('capture.json')} (durable copy {copy})")
     print("Other integrations that point at Z2M entities or devices:")
     links.report(lks, att, {d["device_id"]: d["name_by_user"] or d["name"] for d in out_d})
+    print("Zigbee2MQTT features that ZHA does not take over by itself:")
+    features.report(feats)
 
 
 # ---------------------------------------------------------------- Battery Notes (custom integration)
@@ -304,6 +308,22 @@ def rule_for(prop, domain=None):
     return None
 
 
+def groups(env, ha=None):
+    """Create the captured Z2M groups in ZHA with the same group ids (writes, --yes outside cutover)."""
+    if ha is None:
+        util.confirm()
+        ha = env.ha()
+    cap = env.load_state("capture.json")
+    gs = (cap.get("features") or {}).get("groups") or []
+    if not gs:
+        print("no Z2M groups in the capture")
+        return []
+    ieees = {d["ieee"] for d in ha("zha/devices")}
+    made = features.create_groups(ha, gs, ieees, Logged(env, ha, "groups"))
+    time.sleep(5)  # ZHA adds the members and creates the group entities
+    return made
+
+
 def plan(env):
     """READ-ONLY. Maps every captured Z2M entity to its ZHA successor. Writes plan.json."""
     cap = env.load_state("capture.json")
@@ -332,6 +352,16 @@ def plan(env):
         if o["entity_id"] in ovr:
             r["new"] = ovr[o["entity_id"]]
             r["status"] = "OVERRIDE" if r["new"] else "DROP (override)"
+        elif o.get("group_id") is not None:
+            want = features.zha_group_uid(o["domain"], o["group_id"])
+            hit = [z for z in zdet.values() if z["unique_id"] == want and z["entity_id"] not in used]
+            if hit:
+                r["new"] = hit[0]["entity_id"]
+            else:
+                r["status"] = (f"NOMATCH Z2M group {o['group_id']}: no ZHA group entity {want} "
+                               "(run groups --yes, ZHA needs 2+ members of that kind)")
+        elif o["ieee"] is not None and features.ACTION_PROPS.match(o["prop"] or "") or o["domain"] == "event":
+            r["status"] = "DROP (remote action entity: ZHA sends zha_event / device triggers, rewrite automations)"
         elif o["ieee"] is None or o["bridge"]:
             r["status"] = "DROP (Z2M bridge entity, no ZHA equivalent)"
         else:
@@ -391,8 +421,8 @@ def plan(env):
                 r["status"] = "MAP" + (f" (note: {', '.join(problems)})" if problems else "")
         if r["status"].startswith("DROP") and o["entity_id"] in refs and o["entity_id"] not in ovr:
             r["status"] = "BLOCK referenced in config but no ZHA successor (" + r["status"] + ")"
-        r["blocking"] = r["status"].startswith(("BLOCK", "NOMATCH")) and o["prop"] not in OPTIONAL \
-            and not is_generic(o["prop"], o["domain"])
+        r["blocking"] = r["status"].startswith(("BLOCK", "NOMATCH")) and (
+            o.get("group_id") is not None or (o["prop"] not in OPTIONAL and not is_generic(o["prop"], o["domain"])))
         blocks += r["blocking"]
         rows.append(r)
     devmap = []

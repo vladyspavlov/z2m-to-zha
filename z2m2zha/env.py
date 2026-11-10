@@ -336,6 +336,18 @@ class Z2M:
         """IEEE (0x...) -> friendly name."""
         return self._yaml().get("names") or {}
 
+    def settings(self):
+        """Non-secret Z2M settings the features check needs (options, groups, availability, converters)."""
+        y = self._yaml()
+        try:
+            ls = util.run(["sudo", "-n", "ls", self.file("external_converters")] if util.have_sudo()
+                          else ["ls", self.file("external_converters")]).split()
+        except Exception:  # noqa: BLE001 (no folder)
+            ls = []
+        return {k: y.get(k) for k in ("device_options", "global_device_options", "groups", "availability",
+                                      "external_converters")} | {
+            "external_converter_files": [f for f in ls if f.endswith((".js", ".mjs", ".cjs", ".ts"))]}
+
     def devices(self):
         """Records of Z2M's database.db (newline-delimited JSON, zigbee-herdsman format)."""
         return [json.loads(ln) for ln in util.read_text(self.file("database.db")).splitlines() if ln.strip()]

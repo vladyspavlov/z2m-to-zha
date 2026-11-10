@@ -22,7 +22,7 @@ user, and read each step's output carefully instead of assuming success.
 * **Ask the user right before each step that causes a Zigbee outage or writes**, say what it
   does and how long Zigbee is down, and wait for an explicit yes. Approval for one step is not
   approval for the next. These steps are: `backup`, `preflight` (about 1 min outage),
-  `listen-test` (2 to 4 min), `cutover` (about 1 min, changes the registry), `apply`, `polish`,
+  `listen-test` (2 to 4 min), `cutover` (about 1 min, changes the registry), `groups`, `apply`, `polish`,
   `nudge`, `orphans --yes`, `rollback`, any edit of `configuration.yaml` or quirk files, any
   Home Assistant restart, and any change to backup settings.
 * **Never print secrets.** Z2M's `configuration.yaml`, `coordinator_backup.json`, network
@@ -85,6 +85,11 @@ seconds until a line starting with `RESULT` appears. A dropped SSH session does 
    integration that deletes or rewrites itself when its source entity disappears belongs in
    `protect_domains`, one whose options flow is a plain form with the device field in
    `relink_options_domains` (ask before changing the config). Mention the HomeKit note if shown.
+   Then read the **Zigbee2MQTT features** part and tell the user each item with its
+   consequence: groups (recreated automatically, a group with fewer than 2 members gets no ZHA
+   entity), action entities (automations to rewrite), calibration or precision options (values
+   shift), behaviour options (timers, inversion, debounce), availability timeouts, external
+   converters (need quirks), Green Power devices (stop working), other MQTT users (go silent).
 3. `suggest-zha-config`. It prints the `zha:` block that reproduces the Z2M setup: switch
    pins (`device_config`, else those switches become lights), TX power from Z2M, and the
    custom quirks path. With approval, merge it into `configuration.yaml` (back the file up,
@@ -96,6 +101,22 @@ seconds until a line starting with `RESULT` appears. A dropped SSH session does 
 5. Ask about the energy chain: if a Z2M power sensor feeds a Riemann integration / utility
    meter for the Energy dashboard, put both ids in `config.json` under `energy`. Put the most
    important entities in `must_exist`.
+
+Before proposing the cutover, go through this checklist and say for each item whether it applies
+(the tool reports most of them, the last ones need a question):
+
+| Check | Where it shows | Must be settled before the cutover? |
+|---|---|---|
+| Radio type proven (`znp`) or untested | `detect` | Tell the user |
+| Network backup present, preflight PASS | `detect`, `preflight` | Yes |
+| Every device interviewed, a quirk for each Tuya `_TZE` device that matters | `build-test` | Yes, for the devices the user needs |
+| Switches pinned (`device_config`), TX power, quirks path in `configuration.yaml`, HA restarted | `suggest-zha-config` | Yes |
+| Device ids, entity UUIDs, IEEEs, raw topics in automations, scripts, dashboards | `scan-refs` files | Plan the rewrite, it can wait for after |
+| Helpers and custom integrations (`PROTECT`, `RELINK`, `MANUAL`) | `scan-refs` config entries | `MANUAL` ones: tell the user what to repoint |
+| Groups, action entities, software options, converters, Green Power, MQTT users | `scan-refs` features | Tell the user, rewrite referenced action entities |
+| Energy dashboard power sensor and its Riemann / utility meter | ask | Put the ids in `energy` |
+| HomeKit, Alexa or Google exposure of Zigbee entities | `scan-refs` (HomeKit), ask for cloud | HomeKit accessories become new, cloud voice exposure follows the entity id |
+| Custom firmware or devices that will be re-paired later | ask | A re-pair keeps the ids, `switch_as_x` must be recreated |
 
 Summarise the findings, risks and the plan, then propose the next step.
 
@@ -136,6 +157,14 @@ Summarise the findings, risks and the plan, then propose the next step.
 * `NOMATCH ambiguous` or a wrong guess: write `state/overrides.json` as
   `{"<old entity_id>": "<zha entity_id>"}`. Use `null` to drop an entity on purpose, only after
   the user agrees, because its history stops there.
+* `NOMATCH Z2M group N`: ZHA has no group entity for it. Run `groups --yes` (the cutover tries
+  it once), check `zha/groups` for the members. ZHA makes a group entity only for 2 or more
+  members of one kind, so a smaller group needs an override (`null` with the user's consent, or a
+  ZHA member entity).
+* `DROP (remote action entity ...)` turning into `BLOCK referenced in config`: an automation
+  listens to a Z2M action sensor. Rewrite it to a ZHA device trigger or a `zha_event` trigger
+  (press the button and watch the `zha_event` in Developer Tools, Events, to get the command
+  name), then `null` the row in `overrides.json`.
 * `BLOCK referenced in config but no ZHA successor`: something uses that entity. Propose a
   replacement entity and edit the reference, or an override, with approval.
 
@@ -201,3 +230,7 @@ block afterwards (HA restart needed).
 | OTA ends with TIMEOUT (148) | No block request for 30 s. Common on sleepy end devices, which may never update this way. Routers are fine |
 | Relay switches with a lag or its state never updates after an OTA or re-pair | Attribute reporting was not set up (busy mesh). Run "Reconfigure" on the device page, then check one on/off |
 | A device was removed and joined again | HA restores its old entity ids, names and area. Recreate any `switch_as_x` helper that wrapped it, under its old entity id |
+| Custom firmware (for example a relay flashed to another firmware) | Endpoints and model change, so re-pair it (remove, permit join). The relay may sit on another endpoint, so pin `<ieee>-<new endpoint>` in `device_config` first or ZHA makes it a light. Settings like the wall switch mode start at the firmware defaults, set them like before |
+| Temperatures or humidity a bit off after the move | A Z2M `*_calibration` option did that in software. Use the device's calibration entity or a template sensor |
+| Motion clears at a different time | Z2M `occupancy_timeout` is not used. ZHA quirks have their own reset time |
+| Automation on `unavailable` fires late or early | ZHA availability: 2 h mains, 6 h battery (ZHA options) |

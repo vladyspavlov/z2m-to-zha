@@ -189,6 +189,14 @@ def cutover(env, reuse_capture=False):
               flush=True)
         sys.exit(2)
 
+    groups = (env.load_state("capture.json").get("features") or {}).get("groups") or []
+    if groups:
+        util.log("== 5b. Z2M groups -> ZHA groups (same group ids)")
+        try:
+            registry.groups(env, ha)
+        except Exception as e:  # noqa: BLE001 (a group problem must not stop the cutover, plan shows it)
+            util.log("group creation failed:", e)
+
     util.log("== 6. plan loop")
     deadline, blocks = time.time() + 600, None
     while time.time() < deadline:

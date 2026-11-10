@@ -115,6 +115,7 @@ in `bash -lc "..."` so the Supervisor token is loaded.
 | `backup --yes` | yes (backups only) | no | Copies the Z2M data dir and creates a full HA backup with your automatic backup settings |
 | `capture` | no | no | Snapshot of all Z2M entities, devices, helpers, Battery Notes (plus a durable copy) |
 | `cutover` | **yes** | about 1 min | The migration (stop Z2M, preseed, ZHA flow, plan, apply, verify) |
+| `groups --yes` | **yes** | no | Creates the Z2M groups in ZHA with the same ids (part of `cutover`) |
 | `plan` | no | no | Maps every Z2M entity to its ZHA successor, shows blocking rows |
 | `apply --yes` | **yes** | no | Renames, moves helpers and Battery Notes, then runs `polish` |
 | `polish` | **yes** | no | Makes friendly names, icons and device classes match the capture |
@@ -144,7 +145,9 @@ half-way. Follow them with `tail -f state/<name>.log` until the `RESULT` line. A
    `device_ids_BREAK` (device triggers, conditions and actions), `entity_uuids_BREAK`,
    `ieee_BREAK` or raw `zigbee2mqtt/` MQTT topics must be rewritten, ideally into entity based
    triggers and actions. It also lists every config entry of another integration that points at
-   Z2M entities or devices and what the cutover does with it (see **Other integrations**).
+   Z2M entities or devices and what the cutover does with it (see **Other integrations**), and
+   the Z2M features ZHA does not take over: groups, action entities, software device options,
+   converters, other MQTT users (see **Zigbee2MQTT features ZHA does not take over**).
    `plan` and `verify` use this report too.
 4. **ZHA settings:** `suggest-zha-config`. It prints the `zha:` block that reproduces your Z2M
    setup. **Light vs switch**: ZHA decides from the endpoint's device type, and many relays
@@ -197,7 +200,8 @@ tail -f state/cutover.log
    * **STOP signal**: if the menu offers `choose_automatic_backup`, ZHA thinks the radio
      differs from the seeded backup. The tool aborts and starts Z2M again.
    * The client timeout is 300 seconds, because the radio probe can take more than 60.
-5. Wait until ZHA is loaded with every device. **The outage ends here.**
+5. Wait until ZHA is loaded with every device. **The outage ends here.** Z2M groups are then
+   created in ZHA with the same group ids.
 6. **plan** in a loop. Energy counters without a value are read actively. Then **apply**, which
    includes **polish**, then **verify**.
 
@@ -274,6 +278,8 @@ time.
   domain and a rule per Z2M property. ZHA unique ids look like `<ieee>-<endpoint>-<cluster>`.
   Examples: on/off `-1` or `-1-6`, occupancy `-1-1030`, energy cluster `1794` or translation key
   `summation_delivered`, multi-gang `switch_l2` to endpoint 2.
+* **Groups** join on the group id: Z2M `<group id>_<object id>_zigbee2mqtt` to ZHA
+  `<platform>_zha_group_0x<group id, 4 hex digits>`.
 * **Same domain only.** Z2M often exposes a value twice (for example a sensor and a select).
   The duplicate is dropped.
 * Entities without a ZHA counterpart (link quality is optional, plus firmware `update.*`, some
@@ -333,6 +339,27 @@ when its source entity goes away, add it to `protect_domains`. If it keys on dev
 complex way (like Battery Notes), add its domain to `HANDLED_DOMAINS` in `z2m2zha/links.py` and
 write a capture and a migrate function next to the Battery Notes ones in `z2m2zha/registry.py`.
 Run the tests with `python3 -m unittest discover -s tests -t .`.
+
+## Zigbee2MQTT features ZHA does not take over
+
+ZHA reads the devices from the radio and from `zigbee.db`. Everything Z2M did in software, and
+everything outside Home Assistant that listens to `zigbee2mqtt/` MQTT topics, is not part of
+that. `scan-refs` and `capture` list these with what to do:
+
+| Z2M feature | What happens in ZHA | What to do |
+|---|---|---|
+| **Groups** | The devices keep their group membership (it lives in the device), ZHA does not know the group | The cutover creates each group in ZHA with the **same group id** and members (`groups --yes` does it alone), then `plan` maps the Z2M group entity onto the ZHA group entity (`light_zha_group_0x<id>`). ZHA creates a group entity only for 2 or more members of one kind |
+| **Remote and button `action` sensors, `event.*` entities** | ZHA has no action entity. Buttons fire `zha_event` and offer device triggers | Rewrite the automations. `scan-refs` marks the referenced ones `REWRITE`, `plan` blocks on them |
+| **`*_calibration`, `*_precision`** device options | Z2M changed the value in software. ZHA shows the raw value, statistics see a step | Use the device's own calibration entity if its quirk has one, or a template sensor |
+| **Behaviour options** (`occupancy_timeout`, `invert_cover`, `debounce`, `throttle`, `transition`, `simulated_brightness`, `filtered_*` and similar) | Not applied | Check what the ZHA quirk does (for example Aqara motion clears after 70 s), or rebuild it with an automation |
+| **`homeassistant:` overrides** in Z2M device options | Z2M discovery only | Set name, device class or unit in the HA entity settings |
+| **Availability timeouts** | ZHA marks mains devices unavailable after 2 h and battery devices after 6 h | Adjust `consider_unavailable_mains` / `_battery` in the ZHA options if automations react to `unavailable` |
+| **External converters** | Not used | The devices they covered need a ZHA quirk (`build-test` shows the quirk per device) |
+| **Green Power devices** | Not supported by ZHA | They stop working, tell the user before the cutover |
+| **Other MQTT users** (Node-RED, AppDaemon, scripts on `zigbee2mqtt/...`) | The topics go silent | Running add-ons with such names and add-on config files with `zigbee2mqtt/` topics are listed. Rewrite them to use HA entities |
+| **Bindings and reporting** set up in Z2M | Stay in the devices and keep working. ZHA adds its own bindings to the coordinator | Nothing, but do not expect ZHA to show the Z2M bindings |
+| **Z2M OTA index** | Not used | See **Firmware updates** above |
+| `retain`, `optimistic`, `qos` | MQTT only | Nothing |
 
 ## Rollback (tested path)
 

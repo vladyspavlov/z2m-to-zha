@@ -5,7 +5,7 @@ import re
 import subprocess
 import sys
 
-from . import links, radio, util
+from . import features, links, radio, util
 
 SKIP_DIRS = {"deps", "tts", "backups", "backup", "www", "custom_components", "esphome", "node_modules", ".cloud",
              "image", "media", "share", "themes", "log", "logs", "__pycache__", ".z2m2zha"}
@@ -74,6 +74,7 @@ def scan_refs(env):
     att = links.attached(er, z2m_dev_ids)
     out = {"z2m_entities": len(eids), "z2m_devices": len(dev), "entity_ids": sorted(referenced), "files": report,
            "links": lks, "attached": att}
+    out["features"] = features.collect(env, z2m, sfx, out)
     env.save_state("refs.json", out, 0o644)
     if os.environ.get("SUDO_UID"):
         os.chown(env.state("refs.json"), int(os.environ["SUDO_UID"]), int(os.environ.get("SUDO_GID", "0")))
@@ -87,6 +88,8 @@ def scan_refs(env):
         print(" ", f, json.dumps(h))
     print("Config entries of other integrations (helpers, custom integrations) and what the cutover does:")
     links.report(lks, att, dev)
+    print("Zigbee2MQTT features that ZHA does not take over by itself:")
+    features.report(out["features"])
     print(f"full report: {env.state('refs.json')}")
 
 
