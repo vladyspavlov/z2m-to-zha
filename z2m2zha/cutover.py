@@ -98,28 +98,32 @@ def abort_flows(ha):
                 pass
 
 
-def z2m_back(env, ha, reason, db_backup=None):
-    util.log("!! ABORT:", reason, "-> starting Zigbee2MQTT again")
-    try:
-        abort_flows(ha)
-    except Exception:  # noqa: BLE001
-        pass
-    # An HA radio probe that is still running keeps the port open (Z2M then fails with "Cannot lock port")
-    util.log("port free:", env.wait_port_free(180))
-    try:
-        env.z2m.start()
-        util.log("Zigbee2MQTT started. Nothing else was changed (registry untouched).")
-    except Exception as e:  # noqa: BLE001
-        util.log("!!! could not start Zigbee2MQTT:", e, "-> start it by hand NOW")
-    if db_backup:
-        util.log("the previous zigbee.db is kept at", db_backup)
-    print("RESULT: ABORTED -", reason, flush=True)
-    sys.exit(1)
-
-
 def cutover(env, reuse_capture=False):
     util.detach("cutover", env.state_dir)
     ha = env.ha()
+    phase = {"stopped": False, "flow": False, "owned": False, "boot": None}
+    try:
+        return _cutover(env, ha, phase, reuse_capture)
+    except BaseException:
+        if phase["stopped"] and not phase["owned"]:
+            try:
+                # A lost create-entry response can mean ZHA already owns the radio.
+                if phase["flow"]:
+                    abort_flows(ha)
+                    entries = ha("config_entries/get", domain="zha")
+                    if any(e.get("source") != "ignore" for e in entries):
+                        raise RuntimeError("a ZHA entry exists")
+                if not env.wait_port_free(180):
+                    raise RuntimeError("radio port is still held")
+                env.z2m.start(boot=phase["boot"])
+                print("RESULT: ABORTED - Zigbee2MQTT restarted, registry untouched", flush=True)
+            except BaseException as recovery_error:
+                print("RESULT: RECOVERY REQUIRED - Z2M was not safely restarted:", recovery_error,
+                      "Check ZHA ownership and the radio port before starting Z2M.", flush=True)
+        raise
+
+
+def _cutover(env, ha, phase, reuse_capture=False):
     zha_entries = ha("config_entries/get", domain="zha")
     real = [e for e in zha_entries if e.get("source") != "ignore"]
     if real:
@@ -141,9 +145,10 @@ def cutover(env, reuse_capture=False):
 
     util.log("== 2. stopping Zigbee2MQTT (boot=manual)      >>> ZIGBEE OUTAGE STARTS")
     t_out = time.time()
-    env.z2m.stop()
+    phase["stopped"] = True
+    phase["boot"] = env.z2m.stop()
     if not env.wait_port_free(60):
-        z2m_back(env, ha, f"serial port still held by {env.port_holders()} after 60 s")
+        raise RuntimeError(f"serial port still held by {env.port_holders()} after 60 s")
     util.log("port free")
 
     util.log("== 3. build + validate zigbee.db")
@@ -153,25 +158,25 @@ def cutover(env, reuse_capture=False):
     try:
         s = radio.build(env, new, seed=True)
     except Exception as e:  # noqa: BLE001
-        z2m_back(env, ha, f"preseed build failed: {e}")
+        raise RuntimeError(f"preseed build failed: {e}") from e
     if s["problems"] or s["devices"] != s["built"] or not s["backup"]:
-        z2m_back(env, ha, f"preseed not clean: {s}")
+        raise RuntimeError(f"preseed not clean: {s}")
     expected = env.cfg["expected_devices"] or s["built"]
     try:
         if util.exists(target):
             db_backup = f"{target}.pre-z2m2zha-{int(time.time())}"
             util.fs("mv", target, db_backup)
+            util.log("previous zigbee.db kept at", db_backup)
         util.fs("mv", new, target)
     except Exception as e:  # noqa: BLE001
-        z2m_back(env, ha, f"could not put zigbee.db in place: {e}", db_backup)
+        raise RuntimeError(f"could not put zigbee.db in place: {e}") from e
     radio.cleanup_staging(env)
 
     util.log("== 4. ZHA config flow (advanced -> reuse_settings)")
     time.sleep(3)
-    try:
-        entry_id = run_flow(env, ha)
-    except Exception as e:  # noqa: BLE001
-        z2m_back(env, ha, str(e), db_backup)
+    phase["flow"] = True
+    entry_id = run_flow(env, ha)
+    phase["owned"] = True
     util.log("ZHA entry created:", entry_id)
 
     util.log("== 5. waiting for ZHA to load")
@@ -214,7 +219,10 @@ def cutover(env, reuse_capture=False):
     sys.argv.append("--yes")
     registry.apply(env)
     util.log("== 8. verify")
-    registry.verify(env)
+    bad = registry.verify(env)
+    if bad:
+        raise SystemExit(f"RESULT: CUTOVER INCOMPLETE - {bad} entities are not OK. "
+                         "ZHA stays running. Review verify output, sleepy devices may need to report.")
     util.log(f"done. Zigbee outage was {time.time() - t_out:.0f} s until the entities were renamed")
     print("RESULT: CUTOVER APPLIED - review the verify output. Some config entities may need: nudge --yes",
           flush=True)

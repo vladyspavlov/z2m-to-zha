@@ -47,7 +47,7 @@ class Logged:
     """Every write goes through here and is appended to <state>/<name>.log as JSON lines."""
 
     def __init__(self, env, ha, name):
-        self.ha, self.f = ha, open(env.state(name), "a")
+        self.ha, self.path = ha, env.state(name)
 
     def __call__(self, type_, **kw):
         self.note(type_, **kw)
@@ -55,8 +55,8 @@ class Logged:
 
     def note(self, type_, **kw):
         """Log a write that does not go through the websocket (REST flows)."""
-        self.f.write(json.dumps({"t": time.time(), "cmd": type_, "kw": kw}) + "\n")
-        self.f.flush()
+        with open(self.path, "a") as log_file:
+            log_file.write(json.dumps({"t": time.time(), "cmd": type_, "kw": kw}) + "\n")
 
 
 # ---------------------------------------------------------------- capture
@@ -421,8 +421,8 @@ def plan(env):
                 r["status"] = "MAP" + (f" (note: {', '.join(problems)})" if problems else "")
         if r["status"].startswith("DROP") and o["entity_id"] in refs and o["entity_id"] not in ovr:
             r["status"] = "BLOCK referenced in config but no ZHA successor (" + r["status"] + ")"
-        r["blocking"] = r["status"].startswith(("BLOCK", "NOMATCH")) and (
-            o.get("group_id") is not None or (o["prop"] not in OPTIONAL and not is_generic(o["prop"], o["domain"])))
+        r["blocking"] = r["status"].startswith("BLOCK") or (r["status"].startswith("NOMATCH") and (
+            o.get("group_id") is not None or (o["prop"] not in OPTIONAL and not is_generic(o["prop"], o["domain"]))))
         blocks += r["blocking"]
         rows.append(r)
     devmap = []
@@ -467,6 +467,9 @@ def apply(env):
     left = [e["entity_id"] for e in ha("config/entity_registry/list")
             if e["platform"] == "mqtt" and e["unique_id"].endswith(sfx)]
     print("2. removed the Z2M devices" + (f", WARNING still present: {left}" if left else ""))
+    if left:
+        raise SystemExit("RESULT: APPLY INCOMPLETE - MQTT entities remain. Protected helpers stay disabled. "
+                         "Resolve removal errors, then rerun apply --yes or rollback --yes.")
     # 3. ZHA devices get the Z2M device name, area and labels. Never the coordinator (bridge).
     for d in pl["devices"]:
         if d["zha_device"] and not d["bridge"]:
@@ -476,6 +479,7 @@ def apply(env):
     # 4. ZHA entities onto the old entity ids, with the user's customisations
     old = {e["entity_id"]: e for e in cap["entities"]}
     n = 0
+    failed = []
     for r in pl["rows"]:
         if not r["new"] or not r["status"].startswith(("MAP", "OVERRIDE")):
             continue
@@ -490,6 +494,7 @@ def apply(env):
             n += 1
         except Exception as e:  # noqa: BLE001
             print("   FAILED", r["old"], e)
+            failed.append(r["old"])
             continue
         for dom, opts in (o.get("options") or {}).items():
             if dom not in ("mqtt", "zha") and opts:  # display precision, unit, voice exposure...
@@ -498,6 +503,10 @@ def apply(env):
                 except Exception as e:  # noqa: BLE001
                     print("   options not copied", r["old"], str(e)[:100])
     print(f"4. {n} ZHA entities now use the old entity ids")
+    if failed:
+        raise SystemExit(f"RESULT: APPLY INCOMPLETE - {len(failed)} entity renames failed. "
+                         "Protected helpers stay disabled. Fix the errors, regenerate plan, then apply --yes, "
+                         "or rollback --yes.")
     migrate_battery_notes(ha, cap, pl["devices"], do)
     links.set_disabled(do, prot, False, "5. re-enabled")
     zha_of = {d["old_device"]: d["zha_device"] for d in pl["devices"] if d.get("zha_device")}
@@ -651,6 +660,7 @@ def verify(env):
         print()
         links.check(ha, env, cap, {d["old_device"]: d["zha_device"] for d in pl.get("devices", []) if d.get("zha_device")})
     energy_gap(env, ha, states, cap)
+    return bad
 
 
 def energy_gap(env, ha, states, cap):
@@ -702,6 +712,7 @@ def energy_gap(env, ha, states, cap):
 #    discovery again, HA restores the SAME device_id and entity_id with the customisations.
 def rollback(env):
     util.confirm()
+    util.detach("rollback", env.state_dir)
     cap = env.load_state("capture.json")
     ha = env.ha()
     do = Logged(env, ha, "rollback.log")

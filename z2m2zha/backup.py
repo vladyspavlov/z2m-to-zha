@@ -34,12 +34,8 @@ def backup(env):
         ha("backup/generate_with_automatic_settings")
         how = "automatic backup settings (your locations and encryption choice)"
     except Exception as e:  # noqa: BLE001  automatic settings not configured, or an older HA
-        util.log("automatic backup settings not usable:", str(e)[:120])
-        agents = [a["agent_id"] for a in ha("backup/agents/info").get("agents", [])]
-        local = [a for a in agents if a.endswith(".local")] or agents[:1]
-        ha("backup/generate", agent_ids=local, include_homeassistant=True, include_all_addons=True,
-           include_database=True, name=f"Before Z2M to ZHA {ts}")
-        how = f"agents {local}, NOT encrypted (no password given)"
+        raise SystemExit("RESULT: FAIL - automatic backup request failed. Check backup status before retrying. "
+                         "No fallback was requested and encryption settings were preserved.") from e
     util.log("full HA backup started with", how)
     new = None
     while time.time() - t0 < 3600:

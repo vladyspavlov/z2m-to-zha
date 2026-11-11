@@ -146,8 +146,8 @@ in `bash -lc "..."` so the Supervisor token is loaded.
 | `rollback --yes` | **yes** | about 1 min | Back to Zigbee2MQTT with the same ids, see [Rollback](#rollback-tested-path) |
 
 `backup`, `preflight`, `listen-test`, `cutover` and `rollback` **detach themselves** (own session, output
-in `state/<name>.log`). A dropped SSH session can therefore never leave Zigbee2MQTT stopped
-half-way. Follow them with `tail -f state/<name>.log` until the `RESULT` line. Add
+in `state/<name>.log`). These commands survive a dropped SSH session. Process or host termination can still
+require manual recovery. Follow them with `tail -f state/<name>.log` until the `RESULT` line. Add
 `--foreground` to stay attached.
 
 ## Step by step
@@ -156,8 +156,8 @@ half-way. Follow them with `tail -f state/<name>.log` until the `RESULT` line. A
 
 1. **Back up:** `backup --yes`. It copies the whole Z2M data dir (without logs) to
    `<HA config>/z2m2zha-backups/` and creates a full HA backup with your automatic backup
-   settings (your locations, your encryption choice). Without automatic settings it makes a local,
-   unencrypted backup. The state dir and that folder also hold network backups and captures
+   settings (your locations, your encryption choice). If that request fails, it stops without requesting a fallback. Check backup status and
+   configure automatic backup settings before retrying. The state dir and that folder also hold network backups and captures
    (mode 0600, network backups contain the key).
 2. **Clean up Z2M.** Every device should have a complete interview. `build-test` lists devices it
    had to skip. A device that never finished its interview in Z2M will not work in ZHA either.
@@ -449,3 +449,19 @@ nothing that looks like a key is ever printed.
 ## License
 
 MIT
+
+### Failure results
+
+Every explicit `BLOCK` plan row prevents apply, including referenced optional entities and
+statistics mismatches. An incomplete apply exits with `RESULT: APPLY INCOMPLETE`. Protected
+helpers stay disabled if MQTT entities remain or any required rename fails. Resolve the error,
+run `plan` again and then `apply --yes`, or use `rollback --yes`.
+
+Before ZHA takes ownership, cutover attempts to restore Z2M on exceptions and handled signal
+exits. If a setup response was lost, it first checks for a ZHA entry and waits for the radio
+port to be free. If ownership cannot be established safely, it reports `RESULT: RECOVERY REQUIRED`
+and leaves Z2M stopped. Check the ZHA entry, pending flows and serial port before recovery.
+
+`verify` exits nonzero when an important entity is missing, unknown or unavailable. Cutover
+reports `RESULT: CUTOVER INCOMPLETE` in that case and keeps ZHA running. Sleepy devices may
+only need to wake and report. Run `verify` again after investigating the listed entities.

@@ -80,7 +80,7 @@ def main():
         os.environ["Z2M2ZHA_CONFIG"] = os.path.abspath(a.config)
         sys.argv = [os.path.abspath(x) if x == a.config else x for x in sys.argv]
     env = Env(a.config and os.path.abspath(a.config))
-    {
+    result = {
         "detect": detect,
         "scan-refs": refs.scan_refs,
         "suggest-zha-config": refs.suggest_zha_config,
@@ -100,6 +100,8 @@ def main():
         "orphans": registry.orphans,
         "rollback": registry.rollback,
     }[a.cmd](env)
+    if a.cmd == "verify":
+        return 1 if result else 0
 
 
 if __name__ == "__main__":

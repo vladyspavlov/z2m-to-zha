@@ -123,7 +123,8 @@ Summarise the findings, risks and the plan, then propose the next step.
 ### 2. Back up and prove the radio (ask first for each)
 
 1. `backup --yes`: copies the Z2M data dir to `<HA config>/z2m2zha-backups/` and creates a full
-   HA backup with the user's automatic backup settings (their locations and encryption). Wants
+   HA backup with the user's automatic backup settings (their locations and encryption). If the
+   automatic backup request fails, it stops without a fallback. Check backup status before retrying. Wants
    `RESULT: PASS`. Never change backup encryption or passwords on your own.
 2. `preflight` (about 1 min outage). Wants `RESULT: PASS - ZHA will see the same network`. A
    FAIL means do not migrate. Report what differed (channel, PAN, extended PAN, key).
@@ -144,6 +145,12 @@ Summarise the findings, risks and the plan, then propose the next step.
    * `RESULT: PLAN HAS BLOCKING ROWS`: ZHA runs, the registry is untouched, Z2M is stopped, so
      Zigbee works but automations see the new ZHA ids only. Fix the rows quickly (below), then
      `plan` and, with approval, `apply --yes`. If it takes long, offer `rollback --yes`.
+   * `RESULT: APPLY INCOMPLETE`: protected helpers stay disabled. Resolve the errors, regenerate
+     the plan and rerun apply, or offer rollback.
+   * `RESULT: CUTOVER INCOMPLETE`: ZHA runs but verify found missing or unavailable entities.
+     Investigate, let sleepy devices report, then run verify again.
+   * `RESULT: RECOVERY REQUIRED`: radio ownership could not be established safely. Check ZHA
+     entries, flows and the port before starting Z2M.
    * `RESULT: ZHA NOT LOADED`: investigate the HA log. If it cannot be fixed quickly, offer
      `rollback --yes`.
 
