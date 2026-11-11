@@ -19,6 +19,7 @@ import os
 import re
 import sys
 import time
+import traceback
 from datetime import datetime, timedelta, timezone
 
 from . import features, links, util
@@ -59,6 +60,11 @@ class Logged:
             log_file.write(json.dumps({"t": time.time(), "cmd": type_, "kw": kw}) + "\n")
 
 
+def paired_ieees(records):
+    """IEEEs of the devices in Z2M's database.db. Group records have no ieeeAddr."""
+    return {r["ieeeAddr"] for r in records if r.get("ieeeAddr")}
+
+
 # ---------------------------------------------------------------- capture
 def capture(env):
     """READ-ONLY snapshot of everything Z2M-related, taken while Z2M still runs."""
@@ -88,7 +94,7 @@ def capture(env):
                         "attrs": {k: at.get(k) for k in ("friendly_name", "icon", "device_class",
                                                          "temperature", "hvac_modes", "options") if k in at}})
     dev_ids = {e["device_id"] for e in old if e.get("device_id")}
-    paired = {r["ieeeAddr"] for r in env.z2m.devices()}
+    paired = paired_ieees(env.z2m.devices())
     out_d = []
     for i in dev_ids:
         if i not in devs:
@@ -319,7 +325,7 @@ def groups(env, ha=None):
         print("no Z2M groups in the capture")
         return []
     ieees = {d["ieee"] for d in ha("zha/devices")}
-    made = features.create_groups(ha, gs, ieees, Logged(env, ha, "groups"))
+    made = features.create_groups(ha, gs, ieees, Logged(env, ha, "groups.log"))
     time.sleep(5)  # ZHA adds the members and creates the group entities
     return made
 
@@ -464,8 +470,8 @@ def apply(env):
             print("   remove failed (already gone?):", str(e)[:100])
     time.sleep(5)
     sfx = env.cfg["z2m"]["unique_id_suffix"]
-    left = [e["entity_id"] for e in ha("config/entity_registry/list")
-            if e["platform"] == "mqtt" and e["unique_id"].endswith(sfx)]
+    reg = {e["entity_id"]: e for e in ha("config/entity_registry/list")}
+    left = [e["entity_id"] for e in reg.values() if e["platform"] == "mqtt" and e["unique_id"].endswith(sfx)]
     print("2. removed the Z2M devices" + (f", WARNING still present: {left}" if left else ""))
     if left:
         raise SystemExit("RESULT: APPLY INCOMPLETE - MQTT entities remain. Protected helpers stay disabled. "
@@ -487,7 +493,9 @@ def apply(env):
         kw = {"entity_id": r["new"], "area_id": o["area_id"], "aliases": o.get("aliases") or [],
               "labels": o.get("labels") or [], "disabled_by": "user" if o["disabled_by"] else None,
               "hidden_by": "user" if o["hidden_by"] else None}
-        if r["new"] != r["old"]:
+        if r["new"] not in reg and reg.get(r["old"], {}).get("platform") == "zha":
+            kw["entity_id"] = r["old"]  # renamed by an earlier, interrupted apply: only the settings
+        elif r["new"] != r["old"]:
             kw["new_entity_id"] = r["old"]
         try:
             do("config/entity_registry/update", **kw)
@@ -642,15 +650,31 @@ def verify(env):
     states = {s["entity_id"]: s for s in ha("get_states")}
     must = {r["old"] for r in pl["rows"] if r["new"]} | set(env.cfg["must_exist"])
     must |= {v for v in env.cfg["energy"].values() if v}
-    must |= {e["entity_id"] for e in reg.values() if e["platform"] == "switch_as_x"}
+    # only the switch_as_x helpers that wrap a Z2M entity, not every one in the house
+    sax = ({c["entry_id"] for c in cap.get("switch_as_x", [])}
+           | {lk["entry_id"] for lk in cap.get("links", []) if lk["domain"] == "switch_as_x"})
+    must |= {e["entity_id"] for e in reg.values()
+             if e["platform"] == "switch_as_x" and e.get("config_entry_id") in sax}
     must |= set(env.load_state("refs.json", {}).get("entity_ids", [])) & {e["entity_id"] for e in cap["entities"]}
-    bad = 0
+    # BAD  missing, without a state or unavailable: a real problem, counted and returned
+    # WAIT state unknown: the device has not reported to ZHA yet (normal for sleepy devices)
+    # OFF  disabled in the registry (like it was under Z2M), has no state by design
+    bad = waiting = off = 0
     for eid in sorted(must):
         e, s = reg.get(eid), states.get(eid)
-        good = e is not None and s is not None and s["state"] not in ("unavailable", "unknown")
-        bad += not good
-        print(f"{'OK ' if good else 'BAD'} {eid:58} {e['platform'] if e else 'MISSING':12} {s['state'] if s else '-'}")
-    print(f"\n{bad} of {len(must)} not OK (battery devices may stay unknown until they report)")
+        if e is not None and e.get("disabled_by"):
+            tag, off = "OFF ", off + 1
+        elif e is None or s is None or s["state"] == "unavailable":
+            tag, bad = "BAD ", bad + 1
+        elif s["state"] == "unknown":
+            tag, waiting = "WAIT", waiting + 1
+        else:
+            tag = "OK  "
+        print(f"{tag} {eid:58} {e['platform'] if e else 'MISSING':12} {s['state'] if s else '-'}")
+    print(f"\n{bad} of {len(must)} BAD (missing or unavailable), {waiting} WAIT (unknown until the device "
+          f"reports, nudge can help for config entities), {off} disabled")
+    env.save_state("verify.json", {"ts": time.time(), "checked": len(must), "bad": bad, "waiting": waiting,
+                                   "disabled": off})
     # A ZHA entity named like an old Z2M id plus _2 means the rename onto the old id did not happen
     old_ids = {e["entity_id"] for e in cap["entities"]}
     dup = [e for e in reg if reg[e]["platform"] == "zha" and e not in old_ids and re.sub(r"_\d+$", "", e) in old_ids]
@@ -730,6 +754,20 @@ def rollback(env):
             print("0. WARNING no ZHA network backup:", str(e)[:100])
     prot = links.protect_list(cap)
     links.set_disabled(do, prot, True, "1. disabled")
+    try:
+        _rollback(env, ha, do, cap, zha_entries, applied, prot, t_start)
+    except BaseException as e:
+        if isinstance(e, Exception):
+            traceback.print_exc(file=sys.stdout)  # details first, the log must end with the RESULT line
+        # Not re-enabled here: a helper enabled while its source entity is missing can drop its link.
+        print(f"RESULT: ROLLBACK INCOMPLETE - {str(e) or type(e).__name__}. The protected helpers stay "
+              "disabled. Fix the error, then run rollback --yes again (it can be repeated)", flush=True)
+        if isinstance(e, Exception):
+            sys.exit(1)
+        raise
+
+
+def _rollback(env, ha, do, cap, zha_entries, applied, prot, t_start):
     time.sleep(3)
     bn = cap.get("battery_notes") or {}
     if bn.get("entry_id") and applied:
@@ -738,12 +776,17 @@ def rollback(env):
                       if c["entry_id"] == bn["entry_id"]), {"subentries": []})
         for s in entry.get("subentries", []):
             if s.get("data", {}).get("device_id") in zha_devs:
-                do("config_entries/subentries/delete", entry_id=bn["entry_id"], subentry_id=s["subentry_id"])
+                try:
+                    do("config_entries/subentries/delete", entry_id=bn["entry_id"], subentry_id=s["subentry_id"])
+                except Exception as e:  # noqa: BLE001  one note must not stop the rollback
+                    print(f"   battery note '{s.get('title')}' not removed ({str(e)[:80]}), remove it by hand")
         print("2. removed the Battery Notes on ZHA devices")
-    for z in zha_entries:
+    for z in zha_entries:  # not guarded: Z2M must not be started while ZHA still owns the radio
         ha.rest("DELETE", f"/config/config_entries/entry/{z['entry_id']}")
     print(f"3. deleted {len(zha_entries)} ZHA config entries (no leave sent, radio untouched)")
-    env.wait_port_free(60)
+    if not env.wait_port_free(180):
+        print(f"   WARNING the radio port is still held by {env.port_holders()}. Zigbee2MQTT can fail to start "
+              "(Cannot lock port), check its log and start it again once the port is free")
     env.z2m.start()
     print("4. Zigbee2MQTT started, waiting for its MQTT discovery to bring the entities back")
     want = {e["unique_id"]: e for e in cap["entities"]}
@@ -778,13 +821,20 @@ def rollback(env):
     for d in cap["devices"]:
         nd = devs.get(dev_now.get(d["device_id"], ""))
         if nd and (nd.get("name_by_user") != d["name_by_user"] or nd.get("area_id") != d["area_id"]):
-            do("config/device_registry/update", device_id=nd["id"], name_by_user=d["name_by_user"], area_id=d["area_id"])
+            try:
+                do("config/device_registry/update", device_id=nd["id"], name_by_user=d["name_by_user"],
+                   area_id=d["area_id"])
+            except Exception as err:  # noqa: BLE001
+                print("   FAILED to fix device", d["name_by_user"] or d["name"], str(err)[:80])
     print(f"5. devices back: {len(dev_now)}/{len(cap['devices'])}, "
           f"{sum(k == v for k, v in dev_now.items())} with their original device_id")
     if bn.get("entry_id") and applied:
         for n in bn["notes"]:
             if n["device_id"] in dev_now:
-                create_battery_note(ha, bn["entry_id"], n, dev_now[n["device_id"]], do)
+                try:
+                    create_battery_note(ha, bn["entry_id"], n, dev_now[n["device_id"]], do)
+                except Exception as e:  # noqa: BLE001  never abort the rollback on one note
+                    print(f"  battery note '{n['title']}': FAILED {e}, recreate it by hand")
     if os.path.exists(env.state("relinked.json")):
         links.relink(env, ha, do, cap, dev_now, undo=True)
     links.set_disabled(do, prot, False, "6. re-enabled")

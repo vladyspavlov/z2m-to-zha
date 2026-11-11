@@ -18,7 +18,7 @@ HELP = {
     "listen-test": "stop Z2M a few minutes, run the network on zigpy, list who talks, start Z2M",
     "backup": "copy the Z2M data dir and create a full HA backup (detached, --yes)",
     "capture": "snapshot all Z2M entities/devices/helpers (read-only, Z2M must run)",
-    "cutover": "the migration itself (detached): stop Z2M, preseed, ZHA flow, plan, apply, verify",
+    "cutover": "the migration itself (detached, --yes): stop Z2M, preseed, ZHA flow, plan, apply, verify",
     "groups": "create the Z2M groups in ZHA with the same group ids (cutover does it, --yes)",
     "plan": "map Z2M entities to ZHA entities (read-only)",
     "apply": "rename ZHA entities onto the old ids, move helpers and Battery Notes (--yes)",
@@ -48,7 +48,7 @@ def detect(env):
     print("Zigbee2MQTT          :", f"add-on {z.slug} ({'running' if z.is_running() else 'stopped'})" if z.slug
           else f"commands: {env.cfg['z2m']['stop_cmd']} / {env.cfg['z2m']['start_cmd']}")
     print("Z2M data dir         :", z.data_dir)
-    print("Z2M devices          :", sum(1 for r in z.devices() if r.get("type") != "Coordinator"))
+    print("Z2M devices          :", sum(1 for r in z.devices() if r.get("ieeeAddr") and r.get("type") != "Coordinator"))
     print("Z2M network backup   :", "present" if util.exists(z.file("coordinator_backup.json")) else "MISSING")
     r = env.radio
     print("radio                :", r["port"], "| type", r["type"] or "auto", "| baud", r["baudrate"],
@@ -100,8 +100,9 @@ def main():
         "orphans": registry.orphans,
         "rollback": registry.rollback,
     }[a.cmd](env)
-    if a.cmd == "verify":
-        return 1 if result else 0
+    if a.cmd in ("verify", "backup", "preflight", "build-test", "listen-test"):
+        return 1 if result else 0  # these return a failure count or status, the others exit by exception
+    return 0
 
 
 if __name__ == "__main__":

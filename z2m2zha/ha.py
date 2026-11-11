@@ -14,6 +14,7 @@ import secrets
 import socket
 import ssl
 import struct
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -122,18 +123,39 @@ class _WS:
 class HA:
     """ha("config/entity_registry/list") runs a websocket command. ha.rest(...) calls the REST API."""
 
+    # HA core pings every 55 s and drops a client that does not answer. Pings are only answered
+    # while a command waits for its result, so a connection that sat idle is replaced before use.
+    IDLE_RECONNECT = 30
+
     def __init__(self, cfg, timeout=300):
-        self.rest_base, ws_url, self.token, self.sup_token = endpoints(cfg)
+        self.rest_base, self.ws_url, self.token, self.sup_token = endpoints(cfg)
         self.verify_tls = cfg["ha"].get("verify_tls", True)
-        self.ws = _WS(ws_url, timeout, self.verify_tls)
+        self.timeout, self.ws = timeout, None
+        self._connect()
+
+    def _connect(self):
+        if self.ws is not None:
+            try:
+                self.ws.s.close()
+            except OSError:
+                pass
+        self.ws = _WS(self.ws_url, self.timeout, self.verify_tls)
         if self.ws.recv().get("type") != "auth_required":
             raise HAError("unexpected websocket greeting")
         self.ws.send({"type": "auth", "access_token": self.token})
         if self.ws.recv().get("type") != "auth_ok":
             raise HAError("websocket authentication failed (token)")
-        self.i = 0
+        self.i, self.used = 0, time.monotonic()
 
     def __call__(self, type_, **kw):
+        if time.monotonic() - self.used > self.IDLE_RECONNECT:
+            self._connect()
+        try:
+            return self._command(type_, **kw)
+        finally:
+            self.used = time.monotonic()
+
+    def _command(self, type_, **kw):
         self.i += 1
         self.ws.send({"id": self.i, "type": type_, **kw})
         while True:

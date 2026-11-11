@@ -134,7 +134,7 @@ in `bash -lc "..."` so the Supervisor token is loaded.
 | `listen-test` | no (Z-Stack) | 2 to 4 min | Runs the network on zigpy and lists which devices talk |
 | `backup --yes` | yes (backups only) | no | Copies the Z2M data dir and creates a full HA backup with your automatic backup settings |
 | `capture` | no | no | Snapshot of all Z2M entities, devices, helpers, Battery Notes (plus a durable copy) |
-| `cutover` | **yes** | about 1 min | The migration (stop Z2M, preseed, ZHA flow, plan, apply, verify), see [Cut over](#2-cut-over-about-1-minute-of-outage) |
+| `cutover --yes` | **yes** | about 1 min | The migration (stop Z2M, preseed, ZHA flow, plan, apply, verify), see [Cut over](#2-cut-over-about-1-minute-of-outage) |
 | `groups --yes` | **yes** | no | Creates the Z2M groups in ZHA with the same ids (part of `cutover`) |
 | `plan` | no | no | Maps every Z2M entity to its ZHA successor, shows blocking rows |
 | `apply --yes` | **yes** | no | Renames, moves helpers and Battery Notes, then runs `polish` |
@@ -148,7 +148,9 @@ in `bash -lc "..."` so the Supervisor token is loaded.
 `backup`, `preflight`, `listen-test`, `cutover` and `rollback` **detach themselves** (own session, output
 in `state/<name>.log`). These commands survive a dropped SSH session. Process or host termination can still
 require manual recovery. Follow them with `tail -f state/<name>.log` until the `RESULT` line. Add
-`--foreground` to stay attached.
+`--foreground` to stay attached. Each run appends to its log under a dated header, so the log of
+an earlier attempt is kept. With `--foreground`, `backup`, `preflight`, `listen-test`,
+`build-test` and `verify` exit nonzero when their result is not a pass.
 
 ## Step by step
 
@@ -160,7 +162,9 @@ require manual recovery. Follow them with `tail -f state/<name>.log` until the `
    configure automatic backup settings before retrying. The state dir and that folder also hold network backups and captures
    (mode 0600, network backups contain the key).
 2. **Clean up Z2M.** Every device should have a complete interview. `build-test` lists devices it
-   had to skip. A device that never finished its interview in Z2M will not work in ZHA either.
+   had to skip and reports `NOT READY` while there are any. A device that never finished its
+   interview in Z2M will not work in ZHA either, and `cutover` refuses to start with one (finish
+   the interview or remove the device from Z2M).
 3. **Check references:** `scan-refs`. Entity id references survive. Anything listed under
    `device_ids_BREAK` (device triggers, conditions and actions), `entity_uuids_BREAK`,
    `ieee_BREAK` or raw `zigbee2mqtt/` MQTT topics must be rewritten, ideally into entity based
@@ -202,13 +206,14 @@ require manual recovery. Follow them with `tail -f state/<name>.log` until the `
 ### 2. Cut over (about 1 minute of outage)
 
 ```bash
-bash -lc "python3 -m z2m2zha cutover"
+bash -lc "python3 -m z2m2zha cutover --yes"
 tail -f state/cutover.log
 ```
 
 1. **capture**: entity registry entries, their options, the current state and attributes
    (friendly name, icon, device class), devices, areas, labels, `switch_as_x` helpers and Battery
-   Notes.
+   Notes. Then a **test build** of `zigbee.db` while Z2M still runs. If it is not clean (problems,
+   skipped devices, no network backup) the cutover refuses here, before any outage.
 2. **Stop Z2M** (add-on boot set to manual), then wait until no process holds the serial port.
    This checks `/proc/*/fd` in every container rather than sleeping a fixed time.
 3. **Build and validate** `zigbee.db` from the files Z2M just saved, then put it in place. Any
@@ -237,8 +242,9 @@ and `apply --yes` yourself.
 
 ### 3. After the cutover
 
-* `verify` lists every important entity with its platform and state. Battery devices stay
-  `unknown` until they next report.
+* `verify` lists every important entity with its platform and state. `BAD` is missing or
+  unavailable. `WAIT` is `unknown`, which battery devices stay until they next report. `OFF` is
+  an entity that is disabled in the registry, like it was under Z2M. Only `BAD` counts as a failure.
 * `nudge --yes`: some Tuya devices only report on change and ignore the data query. Their
   numbers, selects and thermostat state stay unknown in ZHA until something changes. Writing the
   captured value back makes them report. Only entities that are unknown right now are touched.
@@ -458,10 +464,18 @@ helpers stay disabled if MQTT entities remain or any required rename fails. Reso
 run `plan` again and then `apply --yes`, or use `rollback --yes`.
 
 Before ZHA takes ownership, cutover attempts to restore Z2M on exceptions and handled signal
-exits. If a setup response was lost, it first checks for a ZHA entry and waits for the radio
-port to be free. If ownership cannot be established safely, it reports `RESULT: RECOVERY REQUIRED`
-and leaves Z2M stopped. Check the ZHA entry, pending flows and serial port before recovery.
+exits, with the add-on boot mode it had before. It ends with `RESULT: ABORTED - <reason>`. The
+staged copies of the network backup are removed in that case too. If a setup response was lost,
+it first checks for a ZHA entry over a fresh connection. When one exists it reports
+`RESULT: ZHA OWNS THE RADIO` and leaves Z2M stopped: check that ZHA is loaded, then run `plan`
+and `apply --yes`, or `rollback --yes`. If the radio port stays held or Z2M cannot be started, it
+reports `RESULT: RECOVERY REQUIRED` and leaves Z2M stopped. Check the ZHA entry, pending flows
+and serial port before recovery.
 
-`verify` exits nonzero when an important entity is missing, unknown or unavailable. Cutover
-reports `RESULT: CUTOVER INCOMPLETE` in that case and keeps ZHA running. Sleepy devices may
-only need to wake and report. Run `verify` again after investigating the listed entities.
+`verify` exits nonzero when an important entity is missing or unavailable (`BAD`). Cutover
+reports `RESULT: CUTOVER INCOMPLETE` in that case and keeps ZHA running. Entities that are only
+`unknown` (`WAIT`) do not fail it: `RESULT: CUTOVER APPLIED` names how many still wait for their
+first report. Run `verify` again later, and `nudge --yes` for config entities that stay unknown.
+
+A rollback that hits an unexpected error ends with `RESULT: ROLLBACK INCOMPLETE` and keeps the
+protected helpers disabled. Fix the error and run `rollback --yes` again, it can be repeated.

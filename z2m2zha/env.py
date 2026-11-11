@@ -262,7 +262,7 @@ class Z2M:
             hits.sort(key=lambda a: a.get("state") != "started")
             self.slug = hits[0]["slug"] if hits else None
 
-    def _need_control(self):
+    def need_control(self):
         if not self.slug and not (self.stop_cmd and self.start_cmd):
             raise SystemExit("cannot control Zigbee2MQTT: no add-on found. Set z2m.stop_cmd and z2m.start_cmd")
 
@@ -274,12 +274,16 @@ class Z2M:
             return self.info().get("state") == "started"
         return None  # unknown for command-controlled installs
 
+    def boot_mode(self):
+        """The add-on's boot mode (auto or manual), None for command-controlled installs."""
+        return (self.info().get("boot") or "auto") if self.slug else None
+
     def stop(self):
         """Stop Z2M and keep it from starting on its own (add-on boot=manual).
 
         Returns the previous boot mode, so a temporary stop can restore it with start(boot=...).
         """
-        self._need_control()
+        self.need_control()
         if self.slug:
             prev = self.info().get("boot") or "auto"
             self.env.sup.post(f"/addons/{self.slug}/options", {"boot": "manual"})
@@ -289,7 +293,7 @@ class Z2M:
         return None
 
     def start(self, boot="auto"):
-        self._need_control()
+        self.need_control()
         if self.slug:
             self.env.sup.post(f"/addons/{self.slug}/options", {"boot": boot or "auto"})
             self.env.sup.post(f"/addons/{self.slug}/start")

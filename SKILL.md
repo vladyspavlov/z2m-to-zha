@@ -95,7 +95,9 @@ seconds until a line starting with `RESULT` appears. A dropped SSH session does 
    custom quirks path. With approval, merge it into `configuration.yaml` (back the file up,
    keep a single `zha:` key, validate with `ha core check` or Developer Tools, Check
    configuration) and ask the user to restart HA. Do it now, BEFORE the cutover.
-4. `build-test`. Wants `RESULT: OK` with built == loaded, 0 problems, backup present. Review
+4. `build-test`. Wants `RESULT: OK` with built == loaded, 0 problems, 0 skipped, backup present.
+   A skipped device (incomplete interview) must be fixed or removed in Z2M, `cutover` refuses
+   to start otherwise. Review
    the quirk column: Tuya `_TZE...` devices with "no quirk" usually get few or no entities in
    ZHA. For each one that matters, see **Writing a quirk** below.
 5. Ask about the energy chain: if a Z2M power sensor feeds a Riemann integration / utility
@@ -136,8 +138,10 @@ Summarise the findings, risks and the plan, then propose the next step.
 
 1. Confirm: backup PASS, `zha:` block in place and HA restarted, the user agrees, and nobody
    relies on Zigbee for the next 10 minutes.
-2. `cutover`, then poll `state/cutover.log`. Possible endings:
-   * `RESULT: CUTOVER APPLIED`: go to step 4.
+2. `cutover --yes`, then poll `state/cutover.log`. A `refusing: ...` line means nothing was
+   stopped or changed (for example the test build of `zigbee.db` was not clean). Possible endings:
+   * `RESULT: CUTOVER APPLIED`: go to step 4. It names how many entities still wait for their
+     first report (sleepy devices), which is normal.
    * `RESULT: ABORTED - <reason>`: Z2M was started again and nothing else changed. Report the
      reason. Typical: preseed not clean (fix in Z2M or quirks), STOP signal
      `choose_automatic_backup` (the radio differs from the backup, never force it), radio probe
@@ -147,10 +151,13 @@ Summarise the findings, risks and the plan, then propose the next step.
      `plan` and, with approval, `apply --yes`. If it takes long, offer `rollback --yes`.
    * `RESULT: APPLY INCOMPLETE`: protected helpers stay disabled. Resolve the errors, regenerate
      the plan and rerun apply, or offer rollback.
-   * `RESULT: CUTOVER INCOMPLETE`: ZHA runs but verify found missing or unavailable entities.
-     Investigate, let sleepy devices report, then run verify again.
-   * `RESULT: RECOVERY REQUIRED`: radio ownership could not be established safely. Check ZHA
-     entries, flows and the port before starting Z2M.
+   * `RESULT: CUTOVER INCOMPLETE`: ZHA runs but verify found missing or unavailable entities
+     (`BAD` rows). Investigate them, then run verify again.
+   * `RESULT: ZHA OWNS THE RADIO`: the flow answer was lost but the ZHA entry exists. Z2M stays
+     stopped, the registry is untouched. Check that ZHA is loaded, then `plan` and, with
+     approval, `apply --yes`. Or offer `rollback --yes`.
+   * `RESULT: RECOVERY REQUIRED`: Z2M could not be started again safely (port still held, or
+     the start failed). Check ZHA entries, flows and the port before starting Z2M.
    * `RESULT: ZHA NOT LOADED`: investigate the HA log. If it cannot be fixed quickly, offer
      `rollback --yes`.
 
@@ -177,8 +184,9 @@ Summarise the findings, risks and the plan, then propose the next step.
 
 ### 4. After the cutover
 
-1. `verify`. `BAD` battery devices are usually fine until they report. Anything else `BAD`
-   needs a look. A suffix warning means a rename did not land. The `links:` part lists config
+1. `verify`. `WAIT` (state unknown) is usually fine for battery devices until they report.
+   `OFF` is disabled in the registry on purpose. Every `BAD` (missing or unavailable) needs a
+   look, and only `BAD` makes verify exit nonzero. A suffix warning means a rename did not land. The `links:` part lists config
    entries that still point at removed Z2M devices or entity UUIDs (repoint them in the UI with
    the user, the old and new device are printed) and helpers that deleted themselves.
 2. If config entities (numbers, selects, thermostats) stay `unknown`, offer `nudge --yes`. It
@@ -198,7 +206,9 @@ Summarise the findings, risks and the plan, then propose the next step.
 
 `rollback --yes` brings Z2M back with the same entity ids and device ids. It works before or
 after `apply` and needs `state/capture.json`. Then run `verify`. Offer to remove the `zha:`
-block afterwards (HA restart needed).
+block afterwards (HA restart needed). `RESULT: ROLLBACK INCOMPLETE` means it hit an unexpected
+error and the protected helpers are still disabled: fix the error and run `rollback --yes`
+again, it can be repeated.
 
 ## Writing a quirk (when a Tuya device has none)
 

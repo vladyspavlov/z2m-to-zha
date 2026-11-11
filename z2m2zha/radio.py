@@ -56,13 +56,27 @@ def build(env, out_local, seed=True):
     print(util.mask(out), end="")
     m = re.search(r"wrote (\d+) devices", out)
     built = int(m.group(1)) if m else -1
+    m = re.search(r"\((\d+) skipped", out)
+    skipped = int(m.group(1)) if m else 0
     val = env.zigpy_script("validate_zigbee_db.py", env.in_ha(out_local), env.custom_quirks_in_ha, p["names"])
     print(util.mask(val), end="")
     line = next(ln for ln in val.splitlines() if ln.startswith("SUMMARY "))
     s = json.loads(line[len("SUMMARY "):])
     s["built"] = built
+    s["skipped"] = skipped
     s["seed_source"] = p.get("seed_source")
     return s
+
+
+def not_ready(s):
+    """Why a build summary is not good enough to hand to ZHA (text), or None when it is."""
+    if s["problems"] or s["devices"] != s["built"] or not s["backup"]:
+        return (f"{s['built']} built, {s['devices']} loaded, {s['problems']} problems, "
+                f"network backup {'present' if s['backup'] else 'MISSING'}")
+    if s.get("skipped"):
+        return (f"{s['skipped']} Z2M devices were skipped (interview incomplete, see the SKIP lines). ZHA would "
+                "not know them and plan would block. Finish their interview in Z2M or remove them from Z2M")
+    return None
 
 
 def build_test(env):
@@ -72,10 +86,12 @@ def build_test(env):
         s = build(env, out, seed=True)
     finally:
         cleanup_staging(env)
-    good = s["devices"] == s["built"] and not s["problems"] and s["backup"]
-    print(f"\nRESULT: {'OK' if good else 'NOT READY'} - {s['built']} devices built, {s['devices']} loaded, "
-          f"{s['problems']} problems, network backup {'present' if s['backup'] else 'MISSING'}"
-          + (f" ({s['seed_source']})" if s.get("seed_source") else ""))
+    problem = not_ready(s)
+    print(f"\nRESULT: {'NOT READY' if problem else 'OK'} - {s['built']} devices built, {s['devices']} loaded, "
+          f"{s['problems']} problems, {s['skipped']} skipped, "
+          f"network backup {'present' if s['backup'] else 'MISSING'}"
+          + (f" ({s['seed_source']})" if s.get("seed_source") else "") + (f". {problem}" if problem else ""))
+    return 1 if problem else 0
 
 
 def _radio_args(env, **extra):
@@ -119,6 +135,7 @@ def preflight(env):
         util.fs("rm", "-f", cmp_local)
     res = next((ln for ln in out.splitlines() if ln.startswith("RESULT")), "RESULT: FAIL - no result")
     print(res, flush=True)
+    return 0 if res.startswith("RESULT: PASS") else 1
 
 
 def listen_test(env, seconds=120, allow_write=False):
@@ -137,4 +154,6 @@ def listen_test(env, seconds=120, allow_write=False):
                                                                   timeout=seconds + 300))
     finally:
         cleanup_staging(env)
-    print(next((ln for ln in out.splitlines() if ln.startswith("RESULT")), "RESULT: FAIL - no result"), flush=True)
+    res = next((ln for ln in out.splitlines() if ln.startswith("RESULT")), "RESULT: FAIL - no result")
+    print(res, flush=True)
+    return 1 if res.startswith(("RESULT: FAIL", "RESULT: REFUSED")) else 0

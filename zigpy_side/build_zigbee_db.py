@@ -88,8 +88,8 @@ db = sqlite3.connect(out)
 now = time.time()
 n = skipped = scaling = 0
 for r in recs:
-    if r.get("type") == "Coordinator":
-        continue  # zigpy writes the coordinator itself from the radio
+    if r.get("type") in ("Coordinator", "Group"):
+        continue  # zigpy writes the coordinator itself from the radio, groups are not devices
     if r.get("type") not in LOGICAL or not interviewed(r) or not r.get("endpoints"):
         print(f"SKIP {r.get('ieeeAddr')} ({r.get('modelId')}): type {r.get('type')}, interview incomplete "
               "or no endpoints in Z2M. Fix it in Z2M first or re-pair it later.")

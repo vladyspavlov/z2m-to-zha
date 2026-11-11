@@ -24,7 +24,7 @@ def backup(env):
     for f in ("database.db", "coordinator_backup.json"):
         if util.read_bytes(f"{dst}/{f}") != util.read_bytes(env.z2m.file(f)):
             print(f"RESULT: FAIL - the copy of {f} differs from the original (Z2M wrote it meanwhile?), run again")
-            return
+            return 1
     util.log(f"Z2M data dir copied to {dst} (verified database.db and coordinator_backup.json)")
 
     ha = env.ha()
@@ -32,11 +32,11 @@ def backup(env):
     t0 = time.time()
     try:
         ha("backup/generate_with_automatic_settings")
-        how = "automatic backup settings (your locations and encryption choice)"
-    except Exception as e:  # noqa: BLE001  automatic settings not configured, or an older HA
-        raise SystemExit("RESULT: FAIL - automatic backup request failed. Check backup status before retrying. "
-                         "No fallback was requested and encryption settings were preserved.") from e
-    util.log("full HA backup started with", how)
+    except Exception as e:  # noqa: BLE001  never fall back to other settings (locations, encryption)
+        raise SystemExit(f"RESULT: FAIL - the automatic backup request failed ({str(e)[:120]}). Check Settings > "
+                         "System > Backups (automatic backups must be configured, a backup may still be running) "
+                         "before retrying. No other backup was requested.") from e
+    util.log("full HA backup started with automatic backup settings (your locations and encryption choice)")
     new = None
     while time.time() - t0 < 3600:
         time.sleep(20)
@@ -49,7 +49,7 @@ def backup(env):
             break
     if not new:
         print("RESULT: FAIL - no new HA backup appeared within 1 hour. Check Settings > System > Backups")
-        return
+        return 1
     b = new[0]
     failed = b.get("failed_agent_ids") or []
     agents = b.get("agents") or {}  # {agent_id: {"size": bytes, "protected": bool}}
@@ -57,3 +57,4 @@ def backup(env):
     where = ", ".join(f"{k} ({'encrypted' if a.get('protected') else 'not encrypted'})" for k, a in agents.items())
     print(f"RESULT: {'PASS' if not failed else 'PARTIAL'} - HA backup {b['backup_id']} '{b.get('name')}' "
           f"{size / 1e9:.2f} GB on {where}. Z2M copy {dst}" + (f". FAILED agents {failed}" if failed else ""))
+    return 1 if failed else 0

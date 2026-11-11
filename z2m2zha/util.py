@@ -107,7 +107,9 @@ def detach(name, state_dir):
         return
     logf = os.path.join(state_dir, f"{name}.log")
     env = dict(os.environ, Z2M2ZHA_DETACHED="1")
-    with open(logf, "w") as out:
+    with open(logf, "a") as out:  # append: an earlier run's log is evidence, keep it
+        out.write(f"\n==== {time.strftime('%Y-%m-%d %H:%M:%S')} {' '.join(sys.argv[1:])} ====\n")
+        out.flush()
         p = subprocess.Popen([sys.executable, "-m", "z2m2zha", *sys.argv[1:]], env=env, cwd=REPO_ROOT,
                              stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
     print(f"started in the background (pid {p.pid}), so an SSH drop cannot interrupt it.\n"
